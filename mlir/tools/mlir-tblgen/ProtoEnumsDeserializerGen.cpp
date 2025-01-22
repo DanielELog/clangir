@@ -47,13 +47,13 @@ const char *const deserializerDeclFileHeader = R"(
 
 const char *const deserializerDeclStart = R"(
 namespace protocir {
-class EnumDeserializer {
+class EnumsDeserializer {
 public:
 )";
 
 const char *const deserializerDeclEnum = R"(
   static {1}
-  deserialize{0}(CIR{0} &pKind);
+  deserialize{0}(const CIR{0} &pKind);
 )";
 
 const char *const deserializerDeclEnd = R"(
@@ -63,7 +63,7 @@ const char *const deserializerDeclEnd = R"(
 
 const char *const deserializerDefEnumStart = R"(
 {1}
-EnumDeserializer::deserialize{0}(CIR{0} &pKind) {{
+EnumsDeserializer::deserialize{0}(const CIR{0} &pKind) {{
   switch (pKind) {{)";
 
 const char *const deserializerDefEnumCase = R"(
