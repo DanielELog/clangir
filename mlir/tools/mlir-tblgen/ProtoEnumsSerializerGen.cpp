@@ -28,6 +28,7 @@ using llvm::formatv;
 using llvm::Record;
 using llvm::RecordKeeper;
 using namespace mlir;
+using namespace protoenum;
 using mlir::tblgen::EnumAttr;
 using mlir::tblgen::EnumAttrCase;
 

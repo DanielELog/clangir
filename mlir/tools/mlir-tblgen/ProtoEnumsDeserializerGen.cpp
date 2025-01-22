@@ -29,11 +29,12 @@ using llvm::formatv;
 using llvm::Record;
 using llvm::RecordKeeper;
 using namespace mlir;
+using namespace mlir::protoenum;
 using mlir::tblgen::EnumAttr;
 using mlir::tblgen::EnumAttrCase;
 
 const char *const deserializerDefFileHeader = R"(
-#include "cir-tac/EnumDeserializer.h"
+#include "cir-tac/EnumsDeserializer.h"
 
 namespace protocir {
 )";
@@ -44,11 +45,6 @@ const char *const deserializerDeclFileHeader = R"(
 #include <clang/CIR/Dialect/IR/CIRDialect.h>
 )";
 
-const char *const deserializerKindCase = R"(
-    case {0}:
-      return {1};
-)";
-
 const char *const deserializerDeclStart = R"(
 namespace protocir {
 class EnumDeserializer {
@@ -56,8 +52,8 @@ public:
 )";
 
 const char *const deserializerDeclEnum = R"(
-  static {0}
-  deserialize{1}(protocir::CIR{1} &pKind);
+  static {1}
+  deserialize{0}(CIR{0} &pKind);
 )";
 
 const char *const deserializerDeclEnd = R"(
@@ -66,10 +62,9 @@ const char *const deserializerDeclEnd = R"(
 )";
 
 const char *const deserializerDefEnumStart = R"(
-{0}
-EnumDeserializer::deserialize{1}(CIR{1} &pKind) {{
-  switch (pKind) {{
-)";
+{1}
+EnumDeserializer::deserialize{0}(CIR{0} &pKind) {{
+  switch (pKind) {{)";
 
 const char *const deserializerDefEnumCase = R"(
     case protocir::CIR{0}::{3}:
@@ -81,6 +76,10 @@ const char *const deserializerDefEnumEnd = R"(
       llvm_unreachable("NYI");
   }
 }
+)";
+
+const char *const deserializerDefEnd = R"(
+} // namespace: protocir
 )";
 
 static void
@@ -150,6 +149,7 @@ static bool emitEnumProtoDeserializerDefs(const RecordKeeper &records,
 
   for (const Record *def : defs)
     emitEnumProtoSerializer(*def, os, /*emitDecl=*/false);
+  os << deserializerDefEnd;
 
   return false;
 }

@@ -15,11 +15,16 @@
 
 #include "llvm/ADT/StringExtras.h"
 
-static llvm::StringRef makeIdentifier(llvm::StringRef str);
+namespace mlir {
+namespace protoenum {
 
-static llvm::StringRef makeProtoSymbol(llvm::StringRef symbol);
+std::string makeIdentifier(llvm::StringRef str);
 
-static llvm::StringRef makeFullProtoSymbol(llvm::StringRef enumName,
-                                           llvm::StringRef protoSymbol);
+std::string makeProtoSymbol(llvm::StringRef symbol);
+
+std::string makeFullProtoSymbol(llvm::StringRef enumName,
+                                    llvm::StringRef protoSymbol);
+} // namespace: protoenum
+} // ma,espace: mlir
 
 #endif // MLIR_TOOLS_MLIRTBLGEN_PROTOENUMSGENHELPER_H_

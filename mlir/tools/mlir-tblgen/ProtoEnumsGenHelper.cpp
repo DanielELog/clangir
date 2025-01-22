@@ -13,7 +13,7 @@
 #include "ProtoEnumsGenHelper.h"
 #include "mlir/TableGen/Format.h"
 
-llvm::StringRef makeIdentifier(llvm::StringRef str) {
+std::string mlir::protoenum::makeIdentifier(llvm::StringRef str) {
   if (!str.empty() && llvm::isDigit(static_cast<unsigned char>(str.front()))) {
     std::string newStr = std::string("_") + str.str();
     return newStr;
@@ -21,11 +21,11 @@ llvm::StringRef makeIdentifier(llvm::StringRef str) {
   return str.str();
 }
 
-llvm::StringRef makeProtoSymbol(llvm::StringRef symbol) {
+std::string mlir::protoenum::makeProtoSymbol(llvm::StringRef symbol) {
     return llvm::convertToCamelFromSnakeCase(symbol, true);
 }
 
-llvm::StringRef makeFullProtoSymbol(llvm::StringRef enumName,
+std::string mlir::protoenum::makeFullProtoSymbol(llvm::StringRef enumName,
                                     llvm::StringRef symbol) {
     return llvm::formatv("{0}_{1}", enumName, symbol).str();
 }
