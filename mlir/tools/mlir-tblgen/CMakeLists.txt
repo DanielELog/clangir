@@ -36,6 +36,7 @@ add_tablegen(mlir-tblgen MLIR
   ProtoEnumsDeserializerGen.cpp
   ProtoOpDefinitionsGen.cpp
   ProtoOpSerializerGen.cpp
+  ProtoOpDeserializerGen.cpp
   RewriterGen.cpp
   SPIRVUtilsGen.cpp
   )
