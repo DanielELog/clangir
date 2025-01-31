@@ -14,6 +14,8 @@ using llvm::raw_ostream;
 using llvm::RecordKeeper;
 using mlir::tblgen::EnumAttr;
 
+using namespace vespa;
+
 static std::string normalizeName(llvm::StringRef name) {
   if (name == "TLS_Model") {
     return "TLSModel";

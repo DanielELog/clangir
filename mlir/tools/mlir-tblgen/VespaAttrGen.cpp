@@ -17,6 +17,8 @@ using llvm::StringRef;
 using mlir::tblgen::AttrDef;
 using mlir::tblgen::EnumAttr;
 
+using namespace vespa;
+
 std::set<StringRef> mlirAttributeWhitelist = {
     "ArrayAttr", "StringAttr",     "IntegerAttr", "FloatAttr",
     "TypeAttr",  "DictionaryAttr", "UnitAttr",

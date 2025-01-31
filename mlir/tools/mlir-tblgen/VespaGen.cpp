@@ -7,6 +7,8 @@
 #include <map>
 #include <set>
 
+using namespace vespa;
+
 static std::map<llvm::StringRef, llvm::StringRef> cppTypeToProto = {
     {"ArrayRef<Type>", "repeated MLIRTypeID"},
     {"llvm::ArrayRef<int64_t>", "repeated int64"},
@@ -280,6 +282,23 @@ static std::map<llvm::StringRef, llvm::StringRef> cppTypeToBuilder = {
     {"llvm::APFloat", "BigDecimal"},
 };
 
+std::string vespa::makeIdentifier(llvm::StringRef str) {
+  if (!str.empty() && llvm::isDigit(static_cast<unsigned char>(str.front()))) {
+    std::string newStr = std::string("_") + str.str();
+    return newStr;
+  }
+  return str.str();
+}
+
+std::string vespa::makeProtoSymbol(llvm::StringRef symbol) {
+    return llvm::convertToCamelFromSnakeCase(symbol, true);
+}
+
+std::string vespa::makeFullProtoSymbol(llvm::StringRef enumName,
+                                    llvm::StringRef symbol) {
+    return llvm::formatv("{0}_{1}", enumName, symbol).str();
+}
+
 llvm::StringRef removeGlobalScopeQualifier(llvm::StringRef &type) {
   if (type.starts_with("::")) {
     return type.drop_front(2);
@@ -298,17 +317,17 @@ llvm::StringRef removeArray(llvm::StringRef &type) {
   return "";
 }
 
-llvm::StringRef getProtoType(mlir::tblgen::AttrOrTypeParameter &p) {
+llvm::StringRef vespa::getProtoType(mlir::tblgen::AttrOrTypeParameter &p) {
   auto type = p.getCppType();
   return cppTypeToProto.at(removeGlobalScopeQualifier(type));
 }
 
-llvm::StringRef getKotlinType(mlir::tblgen::AttrOrTypeParameter &p) {
+llvm::StringRef vespa::getKotlinType(mlir::tblgen::AttrOrTypeParameter &p) {
   auto type = p.getCppType();
   return cppTypeToKotlin.at(removeGlobalScopeQualifier(type));
 }
 
-void serializeParameter(mlir::tblgen::AttrOrTypeParameter &p,
+void vespa::serializeParameter(mlir::tblgen::AttrOrTypeParameter &p,
                         llvm::StringRef varName,
                         llvm::raw_ostream &os) {
   auto name = p.getName();
@@ -375,7 +394,7 @@ void serializeParameter(mlir::tblgen::AttrOrTypeParameter &p,
   }
 }
 
-void buildParameter(mlir::tblgen::AttrOrTypeParameter &p,
+void vespa::buildParameter(mlir::tblgen::AttrOrTypeParameter &p,
                     llvm::StringRef varName,
                     llvm::raw_ostream &os,
                     size_t padding) {

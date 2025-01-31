@@ -22,6 +22,8 @@ using mlir::tblgen::getRequestedOpDefinitions;
 using mlir::tblgen::NamedSuccessor;
 using mlir::tblgen::Operator;
 
+using namespace vespa;
+
 const char *const protoOpMessageField = "  {0} {1} = {2};\n";
 
 const std::set<StringRef> expressionOps = {

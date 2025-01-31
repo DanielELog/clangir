@@ -14,6 +14,8 @@ using llvm::RecordKeeper;
 using llvm::StringRef;
 using mlir::tblgen::AttrOrTypeDef;
 
+using namespace vespa;
+
 static std::string normalizeTypeName(StringRef name) {
   if (name.ends_with("Type")) {
     name = name.drop_back(4);
