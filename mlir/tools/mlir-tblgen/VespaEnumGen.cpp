@@ -65,7 +65,8 @@ static bool emitEnumProtoSerializerHeader(const RecordKeeper &records,
                                           raw_ostream &os) {
 
   os << autogenMessage;
-  os << "// clang-format off\n";
+  os << clangOff;
+  os << jacoDBLicense;
   os << "\n";
   os << "#pragma once\n";
   os << "\n";
@@ -93,7 +94,7 @@ static bool emitEnumProtoSerializerHeader(const RecordKeeper &records,
                 "CIRRecordKind serializeCIRRecordKind(cir::StructType::RecordKind);\n");
   os << "MLIRSignednessSemantics serializeMLIRSignednessSemantics(mlir::IntegerType::SignednessSemantics);\n";
   os << "\n";
-  os << "// clang-format on\n";
+  os << clangOn;
 
   return false;
 }
@@ -102,7 +103,8 @@ static bool emitEnumProtoSerializerSource(const RecordKeeper &records,
                                           raw_ostream &os) {
 
   os << autogenMessage;
-  os << "// clang-format off\n";
+  os << clangOff;
+  os << jacoDBLicense;
   os << "\n";
   os << "#include \"cir-tac/EnumSerializer.h\"\n";
   os << "#include <clang/CIR/Dialect/IR/CIRTypes.h>\n";
@@ -164,7 +166,7 @@ static bool emitEnumProtoSerializerSource(const RecordKeeper &records,
   os << "}\n";
 
   os << "\n";
-  os << "// clang-format on\n";
+  os << clangOn;
 
   return false;
 }

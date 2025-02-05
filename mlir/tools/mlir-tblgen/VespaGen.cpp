@@ -328,8 +328,8 @@ llvm::StringRef vespa::getKotlinType(mlir::tblgen::AttrOrTypeParameter &p) {
 }
 
 void vespa::serializeParameter(mlir::tblgen::AttrOrTypeParameter &p,
-                        llvm::StringRef varName,
-                        llvm::raw_ostream &os) {
+                               llvm::StringRef varName,
+                               llvm::raw_ostream &os) {
   auto name = p.getName();
   auto snake = llvm::convertToSnakeFromCamelCase(name);
   auto getter = llvm::convertToCamelFromSnakeCase("get_" + snake);
@@ -394,10 +394,91 @@ void vespa::serializeParameter(mlir::tblgen::AttrOrTypeParameter &p,
   }
 }
 
+std::string vespa::serializeParameters(llvm::StringRef ty,
+                                       llvm::ArrayRef<mlir::tblgen::AttrOrTypeParameter> ps,
+                                       llvm::StringRef varName) {
+  std::string serializerRaw;
+  llvm::raw_string_ostream os(serializerRaw);
+  
+  os << formatv("  {0} serialized;\n", ty);
+  for (auto param : ps) {
+    serializeParameter(param, varName, os);
+  }
+  os << "  return serialized;\n";
+
+  return serializerRaw;
+}
+
+void vespa::deserializeParameter(mlir::tblgen::AttrOrTypeParameter &p,
+                                 llvm::StringRef varName,
+                                 llvm::raw_ostream &os) {
+  auto name = p.getName();
+  auto protoGetter = llvm::convertToSnakeFromCamelCase(name);
+  auto type = p.getCppType();
+  type = removeGlobalScopeQualifier(type);
+
+  std::string field = llvm::formatv("{0}.{1}()", varName, protoGetter);
+
+  if (type == "SourceLanguageAttr") {
+    field = llvm::formatv("{0}.getValue()", field);
+  }
+
+  if (type.starts_with("std::optional")) {
+    field = llvm::formatv("*{0}", field);
+  }
+
+  if (type.starts_with("llvm::ArrayRef") || type.starts_with("ArrayRef")) {
+    type = removeArray(type);
+    std::string i = "i";
+    if (cppTypeToSerializer.count(type)) {
+      i = llvm::formatv("{0}({1})", cppTypeToSerializer.at(type), i);
+    } else {
+      assert(primitiveSerializable.count(type));
+    }
+
+    // hotfix
+    if (varName == "attr" && llvm::StringRef(i).starts_with("attributeSerializer")) {
+      i = llvm::StringRef(i).drop_front(20).str();
+    }
+
+    os << llvm::formatv("  for (auto i : {0}) {{\n", field);
+    os << llvm::formatv("    serialized.mutable_{0}()->Add({1});\n", protoGetter, i);
+    os << llvm::formatv("  }\n");
+    return;
+  }
+
+  if (cppTypeToSerializer.count(type)) {
+    field = llvm::formatv("{0}({1})", cppTypeToSerializer.at(type), field);
+  } else {
+    assert(primitiveSerializable.count(type));
+  }
+
+  // hotfix
+  if (varName == "attr" && llvm::StringRef(field).starts_with("attributeSerializer")) {
+    field = llvm::StringRef(field).drop_front(20).str();
+  }
+
+  std::string padding = "";
+  if (p.isOptional()) {
+    padding = "  ";
+    os << llvm::formatv("  if ({0}.{1}()) {{\n", varName, protoGetter);
+  }
+
+  if (settable.count(type)) {
+    os << llvm::formatv("{0}  serialized.set_{1}({2});\n", padding, protoGetter, field);
+  } else {
+    os << llvm::formatv("{0}  *serialized.mutable_{1}() = {2};\n", padding, protoGetter, field);
+  }
+
+  if (p.isOptional()) {
+    os << "  }\n";
+  }
+}
+
 void vespa::buildParameter(mlir::tblgen::AttrOrTypeParameter &p,
-                    llvm::StringRef varName,
-                    llvm::raw_ostream &os,
-                    size_t padding) {
+                           llvm::StringRef varName,
+                           llvm::raw_ostream &os,
+                           size_t padding) {
   auto camel = llvm::convertToCamelFromSnakeCase(p.getName(), false);
   auto upperCamel = llvm::convertToCamelFromSnakeCase(p.getName(), true);
   auto assign = llvm::formatv("{0}.{1}", varName, camel).str();
@@ -417,4 +498,19 @@ void vespa::buildParameter(mlir::tblgen::AttrOrTypeParameter &p,
   } else {
     os << llvm::formatv("{0}{1},\n", pad, assign);
   }
+}
+
+void vespa::generateCodeFile(CppProtoSerializer &serializer,
+                             bool disableClang,
+                             bool addLicense,
+                             bool emitDecl,
+                             llvm::raw_ostream &os) {
+  os << autogenMessage;
+  if (disableClang) os << clangOff;
+  if (addLicense) os << jacoDBLicense;
+
+  if (emitDecl) serializer.dumpDecl(os);
+  else serializer.dumpDef(os);
+
+  if (disableClang) os << clangOn;
 }

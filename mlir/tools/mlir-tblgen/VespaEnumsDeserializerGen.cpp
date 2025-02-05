@@ -23,7 +23,7 @@ using mlir::tblgen::EnumAttrCase;
 using namespace vespa;
 
 const char *const deserializerDefFileHeader = R"(
-#include "cir-tac/EnumsDeserializer.h"
+#include "cir-tac/EnumDeserializer.h"
 
 namespace protocir {
 )";
@@ -36,7 +36,7 @@ const char *const deserializerDeclFileHeader = R"(
 
 const char *const deserializerDeclStart = R"(
 namespace protocir {
-class EnumsDeserializer {
+class EnumDeserializer {
 public:
 )";
 
@@ -52,7 +52,7 @@ const char *const deserializerDeclEnd = R"(
 
 const char *const deserializerDefEnumStart = R"(
 {1}
-EnumsDeserializer::deserialize{0}(const CIR{0} &pKind) {{
+EnumDeserializer::deserialize{0}(const CIR{0} &pKind) {{
   switch (pKind) {{)";
 
 const char *const deserializerDefEnumCase = R"(

@@ -6,6 +6,9 @@
 #include "llvm/ADT/StringExtras.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Support/raw_ostream.h"
+#include "llvm/Support/FormatVariadic.h"
+
+#include "VespaCommon.h"
 
 #include <cassert>
 
@@ -52,9 +55,17 @@ std::string makeFullProtoSymbol(llvm::StringRef enumName,
 
 llvm::StringRef getProtoType(mlir::tblgen::AttrOrTypeParameter &p);
 
+std::string serializeParameters(llvm::StringRef ty,
+                                llvm::ArrayRef<mlir::tblgen::AttrOrTypeParameter> ps,
+                                llvm::StringRef varName);
+
 void serializeParameter(mlir::tblgen::AttrOrTypeParameter &p,
                         llvm::StringRef varName,
                         llvm::raw_ostream &os);
+
+void deserializeParameter(mlir::tblgen::AttrOrTypeParameter &p,
+                          llvm::StringRef varName,
+                          llvm::raw_ostream &os);
 
 llvm::StringRef getKotlinType(mlir::tblgen::AttrOrTypeParameter &p);
 
@@ -62,6 +73,12 @@ void buildParameter(mlir::tblgen::AttrOrTypeParameter &p,
                     llvm::StringRef varName,
                     llvm::raw_ostream &os,
                     size_t padding = 8);
+
+void generateCodeFile(CppProtoSerializer &serializer,
+                      bool disableClang,
+                      bool addLicense,
+                      bool emitDecl,
+                      llvm::raw_ostream &os);
 
 } // namespace: vespa
 

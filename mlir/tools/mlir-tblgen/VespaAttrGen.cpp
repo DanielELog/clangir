@@ -51,8 +51,9 @@ static std::string normalizeEnumName(llvm::StringRef name) {
 }
 
 static bool emitAttrProto(const RecordKeeper &records, raw_ostream &os) {
-  os << clangOff;
   os << autogenMessage;
+  os << clangOff;
+  os << jacoDBLicense;
   os << protoHeader;
   os << "\n";
 
@@ -255,6 +256,7 @@ static bool emitAttrProtoSerializerHeader(const RecordKeeper &records,
 
   os << autogenMessage;
   os << clangOff;
+  os << jacoDBLicense;
   os << "\n";
   os << "#pragma once\n";
   os << "\n";
@@ -352,20 +354,16 @@ static bool emitAttrProtoSerializerSource(const RecordKeeper &records,
   os << clangOff;
   os << "\n";
 
-  os << "#include \"cir-tac/AttrSerializer.h\"\n";
-  os << "#include \"cir-tac/EnumSerializer.h\"\n";
+  os << "#include \"cir-tac/AttrDeserializer.h\"\n";
+  os << "#include \"cir-tac/EnumDeserializer.h\"\n";
   os << "#include \"proto/attr.pb.h\"\n";
-  os << "\n";
-  os << "#include <llvm/ADT/TypeSwitch.h>\n";
   os << "\n";
   os << "using namespace protocir;\n";
   os << "\n";
 
-  os << "MLIRAttribute "
-        "AttributeSerializer::serializeMLIRAttribute(mlir::Attribute attr) {\n";
-  os << "  MLIRAttribute pAttr;\n";
-  os << "\n";
-  os << "  llvm::TypeSwitch<mlir::Attribute>(attr)\n";
+  os << "mlir::Attribute "
+        "AttributeDeserializer::deserializeMLIRAttribute(MLIRAttribute pAttr) {\n";
+  os << "  switch (pAttr.attribute_case()) {\n";
 
   for (auto *def : mlirDefs) {
     AttrDef attr(def);
@@ -373,19 +371,13 @@ static bool emitAttrProtoSerializerSource(const RecordKeeper &records,
     auto nameSnake = llvm::convertToSnakeFromCamelCase(name);
 
     if (mlirAttributeWhitelist.count(name)) {
-      os << formatv("  .Case<mlir::{0}>([this, &pAttr](mlir::{0} attr) {{\n",
-                    name);
-      os << formatv("    auto serialized = serializeMLIR{0}(attr);\n", name);
-      os << formatv("    *pAttr.mutable_{0}() = serialized;\n", nameSnake);
-      os << formatv("  })\n");
+      os << formatv("    case MLIRAttribute::AttributeCase::k{0}:\n", name);
+      os << formatv("      return deserializeMLIR{0}(pAttr.{1}());\n", name, nameSnake);
     }
   }
 
-  os << "  .Case<mlir::FlatSymbolRefAttr>([this, "
-        "&pAttr](mlir::FlatSymbolRefAttr attr) {\n";
-  os << "    auto serialized = serializeMLIRFlatSymbolRefAttr(attr);\n";
-  os << "    *pAttr.mutable_flat_symbol_ref_attr() = serialized;\n";
-  os << "  })\n";
+  os << "    case MLIRAttribute::AttributeCase::kFlatSymbolRefAttr:\n";
+  os << "      return deserializeMLIRFlatSymbolRefAttr(pAttr.flat_symbol_ref_attr());\n";
 
   for (auto *def : cirDefs) {
     AttrDef attr(def);
@@ -395,8 +387,9 @@ static bool emitAttrProtoSerializerSource(const RecordKeeper &records,
 
     auto name = normalizeName(attr.getName());
     auto nameSnake = llvm::convertToSnakeFromCamelCase(name);
-    os << formatv("  .Case<cir::{0}>([this, &pAttr](cir::{0} attr) {{\n", name);
-    os << formatv("    auto serialized = serializeCIR{0}(attr);\n", name);
+
+    os << formatv("    case MLIRAttribute::AttributeCase::k{0}:\n", name);
+    os << formatv("      return deserialize;\n", name);
     os << formatv("    *pAttr.mutable_{0}() = serialized;\n", nameSnake);
     os << formatv("  })\n");
   }
