@@ -20,6 +20,7 @@ void CppProtoSerializer::dumpSwitchFunc(raw_indented_ostream &os) {
     os << "})\n";
   }
   os << formatv(".Default([]({0} {1}) {{\n"
+                "  {1}.dump();\n"
                 "  llvm_unreachable(\"unknown {1} during serialization\");\n"
                 "});\n", inputTy, inputName);
   if (postCaseBody) os.printReindented(postCaseBody.value());
@@ -44,6 +45,17 @@ void CppProtoSerializer::dumpSwitchFunc_des(raw_indented_ostream &os) {
 }
 
 void CppProtoSerializer::genClass() {
+  llvm::SmallVector<MethodParameter> ctrParams;
+  for (auto param : fields) {
+    ctrParams.emplace_back(param.typ, param.name);
+    internalClass.addField(param.typ, param.name);
+  }
+
+  auto *ctr = internalClass.addConstructor<Method::Inline>(ctrParams);
+  for (auto param : fields) {
+    ctr->addMemberInitializer(param.name, param.init);
+  }
+
   auto &mainFuncBody =
     internalClass.addMethod(resTy, formatv("{0}{1}", funcName, resTy),
                             MethodParameter(inputTy, inputName))
@@ -59,16 +71,5 @@ void CppProtoSerializer::genClass() {
       ->body();
     
     printCodeBlock(caseFuncBody.getStream(), cas.translatorBody);
-  }
-
-  llvm::SmallVector<MethodParameter> ctrParams;
-  for (auto param : fields) {
-    ctrParams.emplace_back(param.typ, param.name);
-    internalClass.addField(param.typ, param.name);
-  }
-
-  auto *ctr = internalClass.addConstructor<Method::Inline>(ctrParams);
-  for (auto param : fields) {
-    ctr->addMemberInitializer(param.name, param.init);
   }
 }

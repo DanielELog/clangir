@@ -28,6 +28,14 @@ public:
     std::string init;
   };
 
+  struct HeaderInfo {
+    std::string open;
+    std::string close;
+
+    HeaderInfo(std::string open, std::string close)
+      : open(open), close(close) {}
+  };
+
 private:
   std::string funcName;
   std::string className;
@@ -40,8 +48,8 @@ private:
   std::string inputName;
   std::string serName;
 
-  std::string declHeader;
-  std::string defHeader;
+  HeaderInfo declHeader;
+  HeaderInfo defHeader;
 
   std::optional<std::string> preCaseBody;
   std::optional<std::string> postCaseBody;
@@ -66,11 +74,11 @@ private:
 
 public:
   CppProtoSerializer(std::string className, std::string ret,
-    std::string inputTy, std::string inputName, std::string declHed,
-    std::string defHed)
+    std::string inputTy, std::string inputName, std::string declHedOpen,
+    std::string declHedClose, std::string defHedOpen, std::string defHedClose)
       : funcName("serialize"), className(className), resTy(ret),
-        inputTy(inputTy), inputName(inputName), declHeader(declHed),
-        defHeader(defHed), internalClass(className) {
+        inputTy(inputTy), inputName(inputName), declHeader(declHedOpen, declHedClose),
+        defHeader(defHedOpen, defHedClose), internalClass(className) {
       serName =
         llvm::convertToCamelFromSnakeCase(formatv("p_{0}", inputName).str());
     };
@@ -106,17 +114,19 @@ public:
   }
 
   void dumpDecl(llvm::raw_ostream &os) {
-    os << declHeader << "\n";
+    os << declHeader.open << "\n";
     genClass();
     internalClass.finalize();
     internalClass.writeDeclTo(os);
+    os << declHeader.close << "\n";
   }
 
   void dumpDef(llvm::raw_ostream &os) {
-    os << defHeader << "\n";
+    os << defHeader.open << "\n";
     genClass();
     internalClass.finalize();
     internalClass.writeDefTo(os);
+    os << defHeader.close << "\n";
   }
 };
 
