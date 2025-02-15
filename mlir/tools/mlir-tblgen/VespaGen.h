@@ -20,16 +20,14 @@ inline constexpr const char *autogenMessage =
 inline constexpr const char *clangOff = "// clang-format off\n";
 inline constexpr const char *clangOn = "// clang-format on\n";
 
-inline constexpr const char *protoHeader =
-    R"(
+inline constexpr const char *protoHeader = R"(
 syntax = "proto3";
 package protocir;
 option java_package = "org.jacodb.impl.grpc";
 )";
 
 
-inline constexpr const char *jacoDBLicense =
-  R"(/*
+inline constexpr const char *jacoDBLicense = R"(/*
  *  Copyright 2022 UnitTestBot contributors (utbot.org)
  * <p>
  *  Licensed under the Apache License, Version 2.0 (the "License");
@@ -55,13 +53,14 @@ std::string makeFullProtoSymbol(llvm::StringRef enumName,
 
 llvm::StringRef getProtoType(mlir::tblgen::AttrOrTypeParameter &p);
 
+void serializeParameter(mlir::tblgen::AttrOrTypeParameter &p,
+                        llvm::StringRef varName,
+                        llvm::raw_ostream &os);
+
 std::string serializeParameters(llvm::StringRef ty,
                                 llvm::ArrayRef<mlir::tblgen::AttrOrTypeParameter> ps,
                                 llvm::StringRef varName);
 
-void serializeParameter(mlir::tblgen::AttrOrTypeParameter &p,
-                        llvm::StringRef varName,
-                        llvm::raw_ostream &os);
 
 void deserializeParameter(mlir::tblgen::AttrOrTypeParameter &p,
                           llvm::StringRef varName,
@@ -80,6 +79,6 @@ void generateCodeFile(CppProtoSerializer &serializer,
                       bool emitDecl,
                       llvm::raw_ostream &os);
 
-} // namespace: vespa
+} // namespace vespa
 
 #endif // MLIR_TOOLS_MLIRTBLGEN_VESPAGEN_H_

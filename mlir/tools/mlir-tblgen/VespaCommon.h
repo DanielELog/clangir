@@ -26,6 +26,7 @@ public:
     std::string typ;
     std::string name;
     std::string init;
+    bool isCtrParam;
   };
 
   struct HeaderInfo {
@@ -77,7 +78,8 @@ public:
     std::string inputTy, std::string inputName, std::string declHedOpen,
     std::string declHedClose, std::string defHedOpen, std::string defHedClose)
       : funcName("serialize"), className(className), resTy(ret),
-        inputTy(inputTy), inputName(inputName), declHeader(declHedOpen, declHedClose),
+        inputTy(inputTy), inputName(inputName),
+        declHeader(declHedOpen, declHedClose),
         defHeader(defHedOpen, defHedClose), internalClass(className) {
       serName =
         llvm::convertToCamelFromSnakeCase(formatv("p_{0}", inputName).str());
@@ -89,11 +91,11 @@ public:
   }
 
   void addField(std::string typ, std::string name, std::string init) {
-    fields.push_back({typ, name, init});
+    fields.push_back({typ, name, init, /*isCtrParam=*/false});
   }
 
   void addField(std::string typ, std::string name) {
-    fields.push_back({typ, name, name});
+    fields.push_back({typ, name, name, /*isCtrParam=*/true});
   }
 
   void addStandardCase(std::string typ, std::string typName,
@@ -130,6 +132,6 @@ public:
   }
 };
 
-} // namespace: vespa
+} // namespace vespa
 
 #endif // MLIR_TOOLS_MLIRTBLGEN_VESPACOMMON_H_

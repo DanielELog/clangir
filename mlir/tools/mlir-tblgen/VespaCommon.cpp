@@ -46,14 +46,15 @@ void CppProtoSerializer::dumpSwitchFunc_des(raw_indented_ostream &os) {
 
 void CppProtoSerializer::genClass() {
   llvm::SmallVector<MethodParameter> ctrParams;
-  for (auto param : fields) {
-    ctrParams.emplace_back(param.typ, param.name);
-    internalClass.addField(param.typ, param.name);
+  for (auto field : fields) {
+    if (field.isCtrParam)
+      ctrParams.emplace_back(field.typ, field.name);
+    internalClass.addField(field.typ, field.name);
   }
 
   auto *ctr = internalClass.addConstructor<Method::Inline>(ctrParams);
-  for (auto param : fields) {
-    ctr->addMemberInitializer(param.name, param.init);
+  for (auto field : fields) {
+    ctr->addMemberInitializer(field.name, field.init);
   }
 
   auto &mainFuncBody =
