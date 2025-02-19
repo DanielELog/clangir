@@ -842,25 +842,130 @@ static bool emitAttrKotlinBuilder(const RecordKeeper &records,
   return false;
 }
 
-static mlir::GenRegistration genAttrProto("gen-attr-proto",
-                                          "Generate proto file for attributes",
-                                          &emitAttrProto);
+static bool emitAttrProtoDeserializer(const RecordKeeper &records,
+                                      raw_ostream &os,
+                                      bool emitDecl) {
+  const char *const defHeaderOpen = R"(
+#include "cir-tac/AttrDeserializer.h"
+#include "cir-tac/EnumDeserializer.h"
+#include "proto/attr.pb.h"
+
+#include <llvm/ADT/TypeSwitch.h>
+
+using namespace protocir;
+)";
+
+  const char *const declHeaderOpen = R"(
+#pragma once
+
+#include "Util.h"
+#include "proto/attr.pb.h"
+
+#include <clang/CIR/Dialect/IR/CIRAttrs.h>
+#include <mlir/IR/BuiltinAttributes.h>
+#include <mlir/IR/Location.h>
+
+namespace protocir {
+)";
+
+  const char *const declHeaderClose = R"(
+} // namespace protocir
+)";
+  
+  auto mlirDefs = records.getAllDerivedDefinitionsIfDefined("Builtin_Attr");
+  auto mlirLocationDefs =
+      records.getAllDerivedDefinitionsIfDefined("Builtin_LocationAttr");
+  auto cirDefs = records.getAllDerivedDefinitionsIfDefined("CIR_Attr");
+  auto cirEnumDefs = records.getAllDerivedDefinitionsIfDefined("EnumAttrInfo");
+
+  auto varName = "pAttr";
+
+  CppProtoDeserializer deserClass("AttrDeserializer", {"mlir::Attribute", "MLIRAttribute"},
+    "MLIRAttribute", varName, declHeaderOpen, declHeaderClose, defHeaderOpen, "");
+
+  const char *const mlirNamespace = "mlir::{0}";
+  const char *const cirNamespace = "cir::{0}";
+
+  for (auto *def : mlirDefs) {
+    AttrDef attr(def);
+    auto name = normalizeName(attr.getName());
+    std::string cppName = formatv(mlirNamespace, name).str();
+    if (mlirAttributeWhitelist.count(name)) {
+      auto builder = "{0}::get({1})";
+      auto deserializer = deserializeParameters(name, cppName, attr.getParameters(),
+        varName, builder);
+      auto protoCase = formatv("MLIRAttribute::AttributeCase::k{0}", name).str();
+      deserClass.addStandardCase(cppName, name, protoCase, deserializer);
+    }
+  }
+  for (auto *def : cirDefs) {
+    AttrDef attr(def);
+    if (attr.getName().starts_with("AST")) {
+      continue;
+    }
+    auto name = normalizeName(attr.getName());
+    std::string cppName = formatv(cirNamespace, name).str();
+    auto builder = "{0}::get({1})";
+    auto deserializer = deserializeParameters(name, cppName, attr.getParameters(),
+      varName, builder);
+    auto protoCase = formatv("MLIRAttribute::AttributeCase::k{0}", name).str();
+    deserClass.addStandardCase(cppName, name, protoCase, deserializer);
+  }
+
+  generateCodeFile(deserClass, /*disableClang=*/true, /*addLicense=*/false,
+    emitDecl, os);
+  
+  return false;
+}
+
+static bool emitAttrProtoDeserializerSource(const RecordKeeper &records,
+  llvm::raw_ostream &os) {
+return emitAttrProtoDeserializer(records, os, /*emitDecl=*/false);
+}
+
+static bool emitAttrProtoDeserializerHeader(const RecordKeeper &records,
+  llvm::raw_ostream &os) {
+return emitAttrProtoDeserializer(records, os, /*emitDecl=*/true);
+}
 
 static mlir::GenRegistration
-    genAttrProtoSerializerHeader("gen-attr-proto-serializer-header",
-                                 "Generate proto serializer .h for attributes",
-                                 &emitAttrProtoSerializerHeader);
-
-static mlir::GenRegistration genAttrProtoSerializerSource(
-    "gen-attr-proto-serializer-source",
-    "Generate proto serializer .cpp for attributes",
-    &emitAttrProtoSerializerSource);
+genAttrProto(
+  "gen-attr-proto",
+  "Generate proto file for attributes",
+  &emitAttrProto);
 
 static mlir::GenRegistration
-    getAttrKotlin("gen-attr-kotlin", "Generate kotlin classes for attributes",
-                  &emitAttrKotlin);
+genAttrProtoSerializerHeader(
+  "gen-attr-proto-serializer-header",
+  "Generate proto serializer .h for attributes",
+  &emitAttrProtoSerializerHeader);
 
 static mlir::GenRegistration
-    getAttrKotlinBuilder("gen-attr-kotlin-builder",
-                         "Generate kotlin builder for attributes",
-                         &emitAttrKotlinBuilder);
+genAttrProtoSerializerSource(
+  "gen-attr-proto-serializer-source",
+  "Generate proto serializer .cpp for attributes",
+  &emitAttrProtoSerializerSource);
+
+static mlir::GenRegistration
+genAttrProtoDeserializerHeader(
+  "gen-attr-proto-deserializer-header",
+  "Generate proto deserializer .h for attributes",
+  &emitAttrProtoDeserializerHeader);
+
+static mlir::GenRegistration
+genAttrProtoDeserializerSource(
+  "gen-attr-proto-deserializer-source",
+  "Generate proto deserializer .cpp for attributes",
+  &emitAttrProtoDeserializerSource);
+
+static mlir::GenRegistration
+getAttrKotlin(
+  "gen-attr-kotlin",
+  "Generate kotlin classes for attributes",
+  &emitAttrKotlin);
+
+static mlir::GenRegistration
+getAttrKotlinBuilder(
+  "gen-attr-kotlin-builder",
+  "Generate kotlin builder for attributes",
+  &emitAttrKotlinBuilder);

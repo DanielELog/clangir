@@ -12,38 +12,42 @@ using llvm::formatv;
 
 namespace vespa {
 
-class CppProtoSerializer {
-public:
-  struct SwitchCase {
-    std::string caseType;
-    std::string caseTypeName;
-    std::string caseBody;
-    std::string translatorBody;
-    std::string resType;
-  };
+struct PrivateField {
+  std::string typ;
+  std::string name;
+  std::string init;
+  bool isCtrParam;
+};
 
-  struct PrivateField {
-    std::string typ;
-    std::string name;
-    std::string init;
-    bool isCtrParam;
-  };
+struct HeaderInfo {
+  std::string open;
+  std::string close;
 
-  struct HeaderInfo {
-    std::string open;
-    std::string close;
+  HeaderInfo(std::string open, std::string close)
+    : open(open), close(close) {}
+};
 
-    HeaderInfo(std::string open, std::string close)
-      : open(open), close(close) {}
-  };
+struct CppTypeInfo {
+  std::string factualType;
+  std::string namedType;
+};
 
-private:
+struct SwitchCase {
+  std::string cppType;
+  std::string protoType;
+  std::string caseValue;
+  std::string caseBody;
+  std::string translatorBody;
+};
+
+class CppSource {
+protected:
   std::string funcName;
   std::string className;
   std::vector<SwitchCase> cases;
   std::vector<PrivateField> fields;
 
-  std::string resTy;
+  CppTypeInfo resTy;
   std::string inputTy;
 
   std::string inputName;
@@ -57,54 +61,45 @@ private:
 
   Class internalClass;
 
-  void dumpSwitchFunc(raw_indented_ostream &os);
+  virtual void dumpSwitchFunc(raw_indented_ostream &os) = 0;
 
-  void dumpSwitchFunc_des(raw_indented_ostream &os);
+  virtual void addCaseMethod(const SwitchCase &cas, std::string methodName) = 0;
 
   void printCodeBlock(raw_indented_ostream &os, std::string code);
 
   void genClass();
 
-  void addCase(SwitchCase c) {
-    cases.push_back(c);
-  }
-
   void addField(PrivateField f) {
     fields.push_back(f);
   }
 
-public:
-  CppProtoSerializer(std::string className, std::string ret,
+  void addCase(SwitchCase c) {
+    cases.push_back(c);
+  }
+
+  void addCase(std::string cpp, std::string proto, std::string val,
+               std::string body, std::string translator) {
+    addCase({cpp, proto, val, body, translator});
+  }
+
+  CppSource(std::string funcName, std::string className, CppTypeInfo ret,
     std::string inputTy, std::string inputName, std::string declHedOpen,
     std::string declHedClose, std::string defHedOpen, std::string defHedClose)
-      : funcName("serialize"), className(className), resTy(ret),
+      : funcName(funcName), className(className), resTy(ret),
         inputTy(inputTy), inputName(inputName),
         declHeader(declHedOpen, declHedClose),
         defHeader(defHedOpen, defHedClose), internalClass(className) {
-      serName =
-        llvm::convertToCamelFromSnakeCase(formatv("p_{0}", inputName).str());
-    };
-
-  void addCase(std::string typ, std::string typName, std::string body,
-               std::string translator) {
-    addCase({typ, typName, body, translator, typName});
+    serName =
+      llvm::convertToCamelFromSnakeCase(formatv("p_{0}", inputName).str());
   }
 
+public:
   void addField(std::string typ, std::string name, std::string init) {
     fields.push_back({typ, name, init, /*isCtrParam=*/false});
   }
 
   void addField(std::string typ, std::string name) {
     fields.push_back({typ, name, name, /*isCtrParam=*/true});
-  }
-
-  void addStandardCase(std::string typ, std::string typName,
-                       std::string translator) {
-    auto snakeTypName = llvm::convertToSnakeFromCamelCase(typName);
-    auto caseBody = formatv("auto serialized = serialize{0}({1});\n"
-                            "*{2}.mutable_{3}() = serialized;\n", typName,
-                            inputName, serName, snakeTypName);
-    addCase(typ, typName, caseBody, translator);
   }
 
   void addPreCaseBody(std::string body) {
@@ -129,6 +124,65 @@ public:
     internalClass.finalize();
     internalClass.writeDefTo(os);
     os << defHeader.close << "\n";
+  }
+
+  virtual ~CppSource() = default;
+};
+
+class CppProtoSerializer : public CppSource {
+private:
+  void dumpSwitchFunc(raw_indented_ostream &os) override;
+  void addCaseMethod(const SwitchCase &cas, std::string methodName) override;
+
+  const char *getStandardCaseBody() {
+    return "auto serialized = serialize{0}({1});\n"
+           "*{2}.mutable_{3}() = serialized;\n";
+  }
+
+public:
+  CppProtoSerializer(std::string className, CppTypeInfo ret,
+    std::string inputTy, std::string inputName, std::string declHedOpen,
+    std::string declHedClose, std::string defHedOpen, std::string defHedClose)
+      : CppSource("serialize", className, ret, inputTy, inputName,
+        declHedOpen, declHedClose, defHedOpen, defHedClose) {}
+
+  void addStandardCase(std::string typ, std::string typName,
+                       std::string translator) {
+    auto snakeTypName = llvm::convertToSnakeFromCamelCase(typName);
+    auto bodyFormat = getStandardCaseBody();
+    auto caseBody
+      = formatv(bodyFormat, typName, inputName, serName, snakeTypName);
+    addCase(typ, typName, typName, caseBody, translator);
+  }
+};
+
+class CppProtoDeserializer : public CppSource {
+private:
+  std::string deserName;
+
+  void dumpSwitchFunc(raw_indented_ostream &os) override;
+  void addCaseMethod(const SwitchCase &cas, std::string methodName) override;
+
+  const char *getStandardCaseBody() {
+    return "{2} = deserialize{0}({1});\n";
+  }
+
+public:
+  CppProtoDeserializer(std::string className, CppTypeInfo ret,
+    std::string inputTy, std::string inputName, std::string declHedOpen,
+    std::string declHedClose, std::string defHedOpen, std::string defHedClose)
+      : CppSource("deserialize", className, ret, inputTy, inputName,
+        declHedOpen, declHedClose, defHedOpen, defHedClose) {
+    deserName = formatv("{0}Deser", inputName);
+    addPreCaseBody(formatv("{0} {1};\n", ret.factualType, deserName));
+    addPostCaseBody(formatv("return {0};\n", deserName));
+  }
+
+  void addStandardCase(std::string typ, std::string typName,
+    std::string caseValue, std::string translator) {
+    auto caseBody = formatv(getStandardCaseBody(), typName, inputName, deserName);
+    CppTypeInfo ret = {typ, typName};
+    addCase(typ, typName, caseValue, caseBody, translator);
   }
 };
 

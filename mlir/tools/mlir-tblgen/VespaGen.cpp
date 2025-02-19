@@ -159,6 +159,55 @@ inline static std::map<llvm::StringRef, llvm::StringRef> cppTypeToSerializer = {
     {"llvm::StringRef", "serializeStringRef"},
 };
 
+inline static std::map<llvm::StringRef, const char *const> cppTypeToDeserializerCall = {
+    {"Type", "typeCache.getMLIRTypeID"},
+    {"mlir::Type", "typeCache.getMLIRTypeID"},
+    {"cir::StructType", "typeCache.getMLIRTypeID"},
+    {"cir::FuncType", "typeCache.getMLIRTypeID"},
+    {"cir::BoolType", "typeCache.getMLIRTypeID"},
+    {"cir::ComplexType", "typeCache.getMLIRTypeID"},
+    {"cir::PointerType", "typeCache.getMLIRTypeID"},
+    {"cir::DataMemberType", "typeCache.getMLIRTypeID"},
+    {"cir::CIRFPTypeInterface", "typeCache.getMLIRTypeID"},
+    {"cir::MethodType", "typeCache.getMLIRTypeID"},
+
+    {"Attribute", "attributeSerializer.serializeMLIRAttribute"},
+    {"mlir::Attribute", "attributeSerializer.serializeMLIRAttribute"},
+    {"mlir::TypedAttr", "attributeSerializer.serializeMLIRAttribute"},
+    {"MemRefLayoutAttrInterface", "attributeSerializer.serializeMLIRAttribute"},
+
+    {"StringAttr", "attributeSerializer.serializeMLIRStringAttr"},
+    {"mlir::StringAttr", "attributeSerializer.serializeMLIRStringAttr"},
+
+    {"mlir::ArrayAttr", "attributeSerializer.serializeMLIRArrayAttr"},
+    {"mlir::IntegerAttr", "attributeSerializer.serializeMLIRIntegerAttr"},
+    {"mlir::DictionaryAttr", "attributeSerializer.serializeMLIRDictionaryAttr"},
+    {"mlir::TypeAttr", "attributeSerializer.serializeMLIRTypeAttr"},
+    {"mlir::FlatSymbolRefAttr", "attributeSerializer.serializeMLIRFlatSymbolRefAttr"},
+    {"std::optional<mlir::FlatSymbolRefAttr>", "attributeSerializer.serializeMLIRFlatSymbolRefAttr"},
+
+    {"NamedAttribute", "attributeSerializer.serializeMLIRNamedAttr"},
+
+    {"Location", "attributeSerializer.serializeMLIRLocation"},
+
+    {"cir::GlobalViewAttr", "attributeSerializer.serializeCIRGlobalViewAttr"},
+    {"cir::IntAttr", "attributeSerializer.serializeCIRIntAttr"},
+
+    {"SignednessSemantics", "serializeMLIRSignednessSemantics"},
+    {"CmpOrdering", "serializeCIRCmpOrdering"},
+    {"InlineKind", "serializeCIRInlineKind"},
+    {"VisibilityKind", "serializeCIRVisibilityKind"},
+    {"sob::SignedOverflowBehavior", "serializeCIRSignedOverflowBehavior"},
+
+    {"SourceLanguageAttr", "serializeCIRSourceLanguage"},
+
+    {"APInt", "serializeAPInt"},
+    {"llvm::APInt", "serializeAPInt"},
+    {"llvm::APFloat", "serializeAPFloat"},
+
+    {"llvm::StringRef", "serializeStringRef"},
+};
+
 static std::map<llvm::StringRef, llvm::StringRef> cppTypeToKotlin = {
     {"ArrayRef<Type>", "ArrayList<MLIRTypeID>"},
     {"llvm::ArrayRef<int64_t>", "ArrayList<Long>"},
@@ -409,70 +458,100 @@ std::string vespa::serializeParameters(llvm::StringRef ty,
   return serializerRaw;
 }
 
+std::string deserializeElement(llvm::StringRef typ,
+                               llvm::StringRef varName) {
+  if (cppTypeToDeserializerCall.count(typ)) {
+    auto deserializer = cppTypeToDeserializerCall.at(typ);
+    return formatv(deserializer, varName).str();
+  }
+  assert(primitiveSerializable.count(typ));
+  return varName.str();
+}
+
+std::string deserializeOptional(llvm::StringRef typ,
+                                llvm::StringRef varName,
+                                llvm::StringRef deserName,
+                                std::string fieldName) {
+  // assuming Optionals have zero-parameter constructors
+  const char *const deserializerBody = R"(
+{0} {2}();
+if ({1}.has_{3}()) {{
+  auto elem = {1}.{3}();
+  {2} = {4};
+}
+)";
+
+  auto elDeser = deserializeElement(typ, "elem");
+
+  return formatv(deserializerBody, typ, varName, deserName, fieldName,
+    elDeser).str();
+}
+
+std::string deserializeArray(llvm::StringRef typ,
+                             llvm::StringRef varName,
+                             llvm::StringRef deserName,
+                             std::string fieldName) {
+  const char *const deserializerBody = R"(
+std::vector<{0}> {2};
+for (auto i = 0; i < {1}.{3}_size(); i++) {{
+  auto elem = {1}.{3}(i);
+  {2}.push_back({4});
+}
+)";
+
+  auto elTyp = removeArray(typ);
+  auto elDeser = deserializeElement(elTyp, "elem");
+
+  return formatv(deserializerBody, elTyp, varName, deserName, fieldName,
+    elDeser).str();
+}
+
 void vespa::deserializeParameter(mlir::tblgen::AttrOrTypeParameter &p,
                                  llvm::StringRef varName,
+                                 llvm::StringRef deserName,
                                  llvm::raw_ostream &os) {
   auto name = p.getName();
-  auto protoGetter = llvm::convertToSnakeFromCamelCase(name);
+  auto protoField = llvm::convertToSnakeFromCamelCase(name);
   auto type = p.getCppType();
   type = removeGlobalScopeQualifier(type);
 
-  std::string field = llvm::formatv("{0}.{1}()", varName, protoGetter);
-
-  if (type == "SourceLanguageAttr") {
-    field = llvm::formatv("{0}.getValue()", field);
-  }
-
-  if (type.starts_with("std::optional")) {
-    field = llvm::formatv("*{0}", field);
-  }
-
+  std::string elDeser;
   if (type.starts_with("llvm::ArrayRef") || type.starts_with("ArrayRef")) {
-    type = removeArray(type);
-    std::string i = "i";
-    if (cppTypeToSerializer.count(type)) {
-      i = llvm::formatv("{0}({1})", cppTypeToSerializer.at(type), i);
-    } else {
-      assert(primitiveSerializable.count(type));
-    }
-
-    // hotfix
-    if (varName == "attr" && llvm::StringRef(i).starts_with("attributeSerializer")) {
-      i = llvm::StringRef(i).drop_front(20).str();
-    }
-
-    os << llvm::formatv("  for (auto i : {0}) {{\n", field);
-    os << llvm::formatv("    serialized.mutable_{0}()->Add({1});\n", protoGetter, i);
-    os << llvm::formatv("  }\n");
-    return;
+    elDeser = deserializeArray(type, varName, deserName, protoField);
   }
-
-  if (cppTypeToSerializer.count(type)) {
-    field = llvm::formatv("{0}({1})", cppTypeToSerializer.at(type), field);
-  } else {
-    assert(primitiveSerializable.count(type));
+  else if (p.isOptional()) {
+    elDeser = deserializeOptional(type, varName, deserName, protoField);
   }
-
-  // hotfix
-  if (varName == "attr" && llvm::StringRef(field).starts_with("attributeSerializer")) {
-    field = llvm::StringRef(field).drop_front(20).str();
+  else {
+    elDeser = formatv("{0} = {1};", deserName,
+      deserializeElement(type, protoField)).str();
   }
+  os << elDeser;
+}
 
-  std::string padding = "";
-  if (p.isOptional()) {
-    padding = "  ";
-    os << llvm::formatv("  if ({0}.{1}()) {{\n", varName, protoGetter);
-  }
+std::string vespa::deserializeParameters(llvm::StringRef ty,
+                                         llvm::StringRef cppTy,
+                                         llvm::ArrayRef<mlir::tblgen::AttrOrTypeParameter> ps,
+                                         llvm::StringRef varName,
+                                         const char *const builder) {
+  std::string serializerRaw;
+  llvm::raw_string_ostream os(serializerRaw);
+  std::string builderParams;
+  llvm::raw_string_ostream bp(builderParams);
+  bool firstParam = true;
+  std::string sep = ", ";
 
-  if (settable.count(type)) {
-    os << llvm::formatv("{0}  serialized.set_{1}({2});\n", padding, protoGetter, field);
-  } else {
-    os << llvm::formatv("{0}  *serialized.mutable_{1}() = {2};\n", padding, protoGetter, field);
+  for (auto param : ps) {
+    auto varName = formatv("{0}Deser", param.getName()).str();
+    if (!firstParam) bp << sep;
+    bp << varName;
+    serializeParameter(param, varName, os);
+    firstParam = false;
   }
+  auto built = formatv(builder, cppTy, builderParams);
+  os << formatv("  return {0};\n", built);
 
-  if (p.isOptional()) {
-    os << "  }\n";
-  }
+  return serializerRaw;
 }
 
 void vespa::buildParameter(mlir::tblgen::AttrOrTypeParameter &p,
@@ -500,7 +579,7 @@ void vespa::buildParameter(mlir::tblgen::AttrOrTypeParameter &p,
   }
 }
 
-void vespa::generateCodeFile(CppProtoSerializer &serializer,
+void vespa::generateCodeFile(CppSource &source,
                              bool disableClang,
                              bool addLicense,
                              bool emitDecl,
@@ -509,8 +588,8 @@ void vespa::generateCodeFile(CppProtoSerializer &serializer,
   if (disableClang) os << clangOff;
   if (addLicense) os << jacoDBLicense;
 
-  if (emitDecl) serializer.dumpDecl(os);
-  else serializer.dumpDef(os);
+  if (emitDecl) source.dumpDecl(os);
+  else source.dumpDef(os);
 
   if (disableClang) os << clangOn;
 }

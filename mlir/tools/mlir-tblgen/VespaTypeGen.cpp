@@ -165,7 +165,7 @@ return serialized;
 
   auto defs = getDefs(records);
 
-  CppProtoSerializer serClass("TypeSerializer", "MLIRType", "mlir::Type",
+  CppProtoSerializer serClass("TypeSerializer", {"MLIRType", "MLIRType"}, "mlir::Type",
     "type", declHeader, declHeaderClose, defHeader, "");
 
   serClass.addField("MLIRModuleID", "moduleID");
@@ -199,55 +199,83 @@ static bool emitTypeProtoSerializerHeader(const RecordKeeper &records,
   return emitTypeProtoSerializer(records, os, /*emitDecl=*/true);
 }
 
-static bool emitTypeProtoDeserializerSource(const RecordKeeper &records,
-                                            llvm::raw_ostream &os) {
-  os << autogenMessage;
-  os << clangOff;
-  os << "\n";
+static bool emitTypeProtoDeserializer(const RecordKeeper &records,
+                                      llvm::raw_ostream &os,
+                                      bool emitDecl) {
+  std::string defHeader = R"(
+#include "cir-tac/TypeSerializer.h"
+#include "cir-tac/EnumSerializer.h"
+#include "proto/type.pb.h"
 
-  os << "#include \"cir-tac/TypeDeserializer.h\"\n";
-  os << "#include \"cir-tac/EnumDeserializer.h\"\n";
-  os << "#include \"proto/type.pb.h\"\n";
-  os << "\n";
-  os << "#include <llvm/ADT/TypeSwitch.h>\n";
-  os << "#include <mlir/IR/BuiltinTypes.h>\n";
-  os << "\n";
-  os << "using namespace protocir;\n";
-  os << "\n";
+#include <llvm/ADT/TypeSwitch.h>
+#include <mlir/IR/BuiltinTypes.h>
+
+using namespace protocir;
+)";
+
+  std::string declHeader = R"(
+#pragma once
+
+#include "Util.h"
+#include "cir-tac/AttrSerializer.h"
+#include "proto/setup.pb.h"
+#include "proto/type.pb.h"
+
+#include <clang/CIR/Dialect/IR/CIRTypes.h>
+#include <mlir/IR/BuiltinTypes.h>
+#include <mlir/IR/Builders.h>
+
+namespace protocir {
+)";
+
+  std::string declHeaderClose = "} // namespace protocir";
+
+  std::string structSer = R"(
+CIRStructType serialized;
+for (auto i : type.getMembers()) {
+  serialized.mutable_members()->Add(typeCache.getMLIRTypeID(i));
+}
+*serialized.mutable_name() = attributeSerializer.serializeMLIRStringAttr(type.getName());
+serialized.set_incomplete(type.getIncomplete());
+serialized.set_packed(type.getPacked());
+serialized.set_kind(serializeCIRRecordKind(type.getKind()));
+return serialized;
+)";
 
   auto defs = getDefs(records);
+/*
+  CppProtoDeserializer deserClass("TypeDeserializer", "mlir::Type", "MLIRType",
+    "type", declHeader, declHeaderClose, defHeader, "");
+
+  deserClass.addField("MLIRModuleID", "moduleID");
+  deserClass.addField("TypeCache &", "typeCache");
+  deserClass.addField("AttributeSerializer", "attributeSerializer",
+                      "moduleID, typeCache");
+
+  deserClass.addPreCaseBody("*pType.mutable_id() = typeCache.getMLIRTypeID(type);\n");
 
   for (auto &def : defs) {
     AttrOrTypeDef type(def);
     auto name = normalizeTypeName(type.getName());
-
-    os << formatv("{1} TypeDeserializer::deserialize{0}({0} pType) {{\n", name,
-                  getCppType(type));
-    for (auto param : type.getParameters()) {
-      auto paramName = getParamVarName(param.getName());
-      deserializeParameter(param, "pType", os);
-    }
-    os << "  return serialized;\n";
-    os << "}\n";
-    os << "\n";
+    auto serializer = serializeParameters(name, type.getParameters(), "type");
+    deserClass.addStandardCase(getCppType(type), name, serializer);
   }
+  deserClass.addStandardCase("cir::StructType", "CIRStructType", structSer);
+*/
+//  generateCodeFile(deserClass, /*disableClang=*/true, /*addLicense=*/false,
+//                   emitDecl, os);
 
-  os << "CIRStructType TypeSerializer::serializeCIRStructType(cir::StructType "
-        "type) {\n";
-  os << "  CIRStructType serialized;\n";
-  os << "  for (auto i : type.getMembers()) {\n";
-  os << "    serialized.mutable_members()->Add(typeCache.getMLIRTypeID(i));\n";
-  os << "  }\n";
-  os << "  *serialized.mutable_name() = attributeSerializer.serializeMLIRStringAttr(type.getName());\n";
-  os << "  serialized.set_incomplete(type.getIncomplete());\n";
-  os << "  serialized.set_packed(type.getPacked());\n";
-  os << "  serialized.set_kind(serializeCIRRecordKind(type.getKind()));\n";
-  os << "  return serialized;\n";
-  os << "}\n";
-  os << "\n";
-
-  os << clangOn;
   return false;
+}
+
+static bool emitTypeProtoDeserializerSource(const RecordKeeper &records,
+                                            llvm::raw_ostream &os) {
+  return emitTypeProtoDeserializer(records, os, /*emitDecl=*/false);
+}
+
+static bool emitTypeProtoDeserializerHeader(const RecordKeeper &records,
+                                            llvm::raw_ostream &os) {
+  return emitTypeProtoDeserializer(records, os, /*emitDecl=*/true);
 }
 
 static bool emitTypeKotlin(const RecordKeeper &records, llvm::raw_ostream &os) {

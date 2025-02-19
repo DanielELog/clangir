@@ -61,10 +61,16 @@ std::string serializeParameters(llvm::StringRef ty,
                                 llvm::ArrayRef<mlir::tblgen::AttrOrTypeParameter> ps,
                                 llvm::StringRef varName);
 
-
 void deserializeParameter(mlir::tblgen::AttrOrTypeParameter &p,
                           llvm::StringRef varName,
+                          llvm::StringRef deserName,
                           llvm::raw_ostream &os);
+
+std::string deserializeParameters(llvm::StringRef ty,
+                                  llvm::StringRef cppTy,
+                                  llvm::ArrayRef<mlir::tblgen::AttrOrTypeParameter> ps,
+                                  llvm::StringRef varName,
+                                  const char *const builder);
 
 llvm::StringRef getKotlinType(mlir::tblgen::AttrOrTypeParameter &p);
 
@@ -73,7 +79,7 @@ void buildParameter(mlir::tblgen::AttrOrTypeParameter &p,
                     llvm::raw_ostream &os,
                     size_t padding = 8);
 
-void generateCodeFile(CppProtoSerializer &serializer,
+void generateCodeFile(CppSource &source,
                       bool disableClang,
                       bool addLicense,
                       bool emitDecl,
