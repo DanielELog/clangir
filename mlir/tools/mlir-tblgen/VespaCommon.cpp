@@ -1,8 +1,9 @@
 #include "VespaCommon.h"
+#include "mlir/TableGen/Class.h"
 
 using namespace vespa;
 
-void CppSource::printCodeBlock(raw_indented_ostream &os,
+void CppSwitchSource::printCodeBlock(raw_indented_ostream &os,
                                std::string code) {
   os.indent();
   os.printReindented(code);
@@ -30,9 +31,9 @@ void CppProtoSerializer::dumpSwitchFunc(raw_indented_ostream &os) {
 void CppProtoDeserializer::dumpSwitchFunc(raw_indented_ostream &os) {
   raw_indented_ostream::DelimitedScope scope(os);
   if (preCaseBody) os.printReindented(preCaseBody.value());
-  os << formatv("switch ({0}) {{\n", inputName);
+  os << formatv("switch ({0}) {{\n", switchExpr);
   {
-    raw_indented_ostream::DelimitedScope scope(os);
+    raw_indented_ostream::DelimitedScope scope2(os);
     for (auto c : cases) {
       os << formatv("case {0}: {{\n", c.caseValue);
       printCodeBlock(os, c.caseBody);
@@ -42,29 +43,21 @@ void CppProtoDeserializer::dumpSwitchFunc(raw_indented_ostream &os) {
     os << "  llvm_unreachable(\"NYI\");\n";
     os << "  break;\n";
   }
-  if (postCaseBody) os.printReindented(postCaseBody.value());
   os << "}\n";
+  if (postCaseBody) os.printReindented(postCaseBody.value());
 }
 
-void CppProtoSerializer::addCaseMethod(const SwitchCase &cas, std::string methodName) {
-  auto &caseFuncBody =
-    internalClass.addMethod(cas.protoType, methodName,
-                            MethodParameter(cas.cppType, inputName))
-    ->body();
-  
-  printCodeBlock(caseFuncBody.getStream(), cas.translatorBody);
+Method *CppProtoSerializer::addCaseMethod(const SwitchCase &cas, std::string methodName) {
+  return internalClass.addMethod(cas.protoType, methodName,
+                                 MethodParameter(cas.cppType, inputName));
 }
 
-void CppProtoDeserializer::addCaseMethod(const SwitchCase &cas, std::string methodName) {
-  auto &caseFuncBody =
-    internalClass.addMethod(cas.cppType, methodName,
-                            MethodParameter(cas.protoType, inputName))
-    ->body();
-  
-  printCodeBlock(caseFuncBody.getStream(), cas.translatorBody);
+Method *CppProtoDeserializer::addCaseMethod(const SwitchCase &cas, std::string methodName) {
+  return internalClass.addMethod(cas.cppType, methodName,
+                                 MethodParameter(cas.protoType, inputName));
 }
 
-void CppSource::genClass() {
+void CppSwitchSource::genCtr() {
   llvm::SmallVector<MethodParameter> ctrParams;
   for (auto field : fields) {
     if (field.isCtrParam)
@@ -76,6 +69,11 @@ void CppSource::genClass() {
   for (auto field : fields) {
     ctr->addMemberInitializer(field.name, field.init);
   }
+}
+
+void CppSwitchSource::genClass() {
+  if (!fields.empty())
+    genCtr();
 
   auto &mainFuncBody =
     internalClass.addMethod(resTy.factualType, formatv("{0}{1}", funcName, resTy.namedType),
@@ -85,6 +83,7 @@ void CppSource::genClass() {
   dumpSwitchFunc(mainFuncBody.getStream());
 
   for (auto cas : cases) {
-    addCaseMethod(cas, formatv("{0}{1}", funcName, cas.protoType));
+    auto *method = addCaseMethod(cas, formatv("{0}{1}", funcName, cas.protoType));
+    printCodeBlock(method->body().getStream(), cas.translatorBody);
   }
 }

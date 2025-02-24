@@ -4,6 +4,7 @@
 
 #include "mlir/TableGen/Class.h"
 #include "mlir/Support/IndentedOstream.h"
+#include "llvm/ADT/StringExtras.h"
 
 using mlir::raw_indented_ostream;
 using namespace mlir::tblgen;
@@ -40,7 +41,7 @@ struct SwitchCase {
   std::string translatorBody;
 };
 
-class CppSource {
+class CppSwitchSource {
 protected:
   std::string funcName;
   std::string className;
@@ -63,9 +64,11 @@ protected:
 
   virtual void dumpSwitchFunc(raw_indented_ostream &os) = 0;
 
-  virtual void addCaseMethod(const SwitchCase &cas, std::string methodName) = 0;
+  virtual Method *addCaseMethod(const SwitchCase &cas, std::string methodName) = 0;
 
   void printCodeBlock(raw_indented_ostream &os, std::string code);
+
+  void genCtr();
 
   void genClass();
 
@@ -82,7 +85,7 @@ protected:
     addCase({cpp, proto, val, body, translator});
   }
 
-  CppSource(std::string funcName, std::string className, CppTypeInfo ret,
+  CppSwitchSource(std::string funcName, std::string className, CppTypeInfo ret,
     std::string inputTy, std::string inputName, std::string declHedOpen,
     std::string declHedClose, std::string defHedOpen, std::string defHedClose)
       : funcName(funcName), className(className), resTy(ret),
@@ -110,6 +113,13 @@ public:
     postCaseBody = body;
   }
 
+  void addHelperMethod(std::string methodName, llvm::ArrayRef<MethodParameter> params, std::string methodRet, std::string methodBody) {
+    auto &md =
+      internalClass.addMethod(methodRet, methodName, params)
+        ->body();
+    md.getStream() << methodBody;
+  }
+
   void dumpDecl(llvm::raw_ostream &os) {
     os << declHeader.open << "\n";
     genClass();
@@ -126,13 +136,13 @@ public:
     os << defHeader.close << "\n";
   }
 
-  virtual ~CppSource() = default;
+  virtual ~CppSwitchSource() = default;
 };
 
-class CppProtoSerializer : public CppSource {
+class CppProtoSerializer : public CppSwitchSource {
 private:
   void dumpSwitchFunc(raw_indented_ostream &os) override;
-  void addCaseMethod(const SwitchCase &cas, std::string methodName) override;
+  Method *addCaseMethod(const SwitchCase &cas, std::string methodName) override;
 
   const char *getStandardCaseBody() {
     return "auto serialized = serialize{0}({1});\n"
@@ -143,7 +153,7 @@ public:
   CppProtoSerializer(std::string className, CppTypeInfo ret,
     std::string inputTy, std::string inputName, std::string declHedOpen,
     std::string declHedClose, std::string defHedOpen, std::string defHedClose)
-      : CppSource("serialize", className, ret, inputTy, inputName,
+      : CppSwitchSource("serialize", className, ret, inputTy, inputName,
         declHedOpen, declHedClose, defHedOpen, defHedClose) {}
 
   void addStandardCase(std::string typ, std::string typName,
@@ -156,32 +166,39 @@ public:
   }
 };
 
-class CppProtoDeserializer : public CppSource {
+class CppProtoDeserializer : public CppSwitchSource {
 private:
   std::string deserName;
+  std::string switchExpr;
+  std::string switchParam;
 
   void dumpSwitchFunc(raw_indented_ostream &os) override;
-  void addCaseMethod(const SwitchCase &cas, std::string methodName) override;
+  Method *addCaseMethod(const SwitchCase &cas, std::string methodName) override;
 
   const char *getStandardCaseBody() {
-    return "{2} = deserialize{0}({1});\n";
+    return "return deserialize{0}({1}.{2}());\n";
   }
 
 public:
   CppProtoDeserializer(std::string className, CppTypeInfo ret,
-    std::string inputTy, std::string inputName, std::string declHedOpen,
+    std::string inputTy, std::string switchParam, std::string inputName, std::string declHedOpen,
     std::string declHedClose, std::string defHedOpen, std::string defHedClose)
-      : CppSource("deserialize", className, ret, inputTy, inputName,
-        declHedOpen, declHedClose, defHedOpen, defHedClose) {
+      : CppSwitchSource("deserialize", className, ret, inputTy, inputName,
+        declHedOpen, declHedClose, defHedOpen, defHedClose), switchParam(switchParam) {
     deserName = formatv("{0}Deser", inputName);
-    addPreCaseBody(formatv("{0} {1};\n", ret.factualType, deserName));
-    addPostCaseBody(formatv("return {0};\n", deserName));
+    auto snakeSwitchParam = llvm::convertToSnakeFromCamelCase(switchParam);
+    switchExpr = formatv("{0}.{1}_case()", inputName, snakeSwitchParam);
   }
 
-  void addStandardCase(std::string typ, std::string typName,
-    std::string caseValue, std::string translator) {
-    auto caseBody = formatv(getStandardCaseBody(), typName, inputName, deserName);
-    CppTypeInfo ret = {typ, typName};
+  void addStandardCase(std::string typ, std::string cppNamespace, std::string typName,
+                       std::string translator) {
+    auto snakeName = llvm::convertToSnakeFromCamelCase(typName);
+    typName = formatv("{0}{1}", cppNamespace, typName);
+    auto caseBody = formatv(getStandardCaseBody(), typName, inputName, snakeName);
+    // protobuf converts uppercase words to normal ones with first upper letter
+    // converting first to snake and then to camel imitates this behaviour
+    auto protoName = llvm::convertToCamelFromSnakeCase(snakeName, true);
+    auto caseValue = formatv("{0}::{1}Case::k{2}", inputTy, switchParam, protoName).str();
     addCase(typ, typName, caseValue, caseBody, translator);
   }
 };

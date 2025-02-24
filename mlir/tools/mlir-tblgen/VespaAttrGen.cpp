@@ -1,7 +1,9 @@
+#include "VespaCommon.h"
 #include "VespaGen.h"
 
 #include "mlir/TableGen/AttrOrTypeDef.h"
 #include "mlir/TableGen/Attribute.h"
+#include "mlir/TableGen/Class.h"
 #include "mlir/TableGen/GenInfo.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Support/FormatVariadic.h"
@@ -378,6 +380,10 @@ static bool emitAttrProtoSerializerSource(const RecordKeeper &records,
         "&pAttr](mlir::FlatSymbolRefAttr attr) {\n";
   os << "    auto serialized = serializeMLIRFlatSymbolRefAttr(attr);\n";
   os << "    *pAttr.mutable_flat_symbol_ref_attr() = serialized;\n";
+  os << "  })\n";
+  os << "  .Case<mlir::LocationAttr>([this, &pAttr](mlir::LocationAttr attr) {\n";
+  os << "    auto serialized = serializeMLIRLocation(attr);\n";
+  os << "    *pAttr.mutable_location() = serialized;\n";
   os << "  })\n";
   for (auto *def : cirDefs) {
     AttrDef attr(def);
@@ -842,6 +848,53 @@ static bool emitAttrKotlinBuilder(const RecordKeeper &records,
   return false;
 }
 
+std::set<StringRef> attributeNoCtxBuilder = {
+    "IntegerAttr", "FloatAttr", "StringAttr", "TypeAttr",
+    "AffineMapAttr", "SymbolRefAttr", "CallSiteLoc", "NameLoc",
+    "DenseElementsAttr", "DenseElementsAttr", "DenseResourceElementsAttr",
+    "IntegerSetAttr", "OpaqueAttr", "SparseElementsAttr"
+};
+
+static bool doesNeedCtx(const std::string &name) {
+  return !attributeNoCtxBuilder.count(name);
+}
+
+inline static void aggregateAttribute(const AttrDef &def,
+                                      const CppTypeInfo &cppNamespace,
+                                      const std::string &varName,
+                                      CppProtoDeserializer &addTo,
+                                      bool addAsCase = true) {
+  auto name = normalizeName(def.getName());
+  std::string cppName = formatv("{0}::{1}", cppNamespace.factualType, name).str();
+  auto deserializer = deserializeParameters(name, cppName, def.getParameters(),
+    varName, name, doesNeedCtx(name));
+  auto protoName = formatv("{0}{1}", cppNamespace.namedType, name);
+  if (addAsCase) addTo.addStandardCase(cppName, cppNamespace.namedType, name, deserializer);
+  else addTo.addHelperMethod(formatv("deserialize{0}", protoName),
+    {MethodParameter(protoName, varName)}, cppName, deserializer);
+}
+
+inline static void aggregateEnumAttr(const EnumAttr &def,
+                                     const CppTypeInfo &cppNamespace,
+                                     const std::string &varName,
+                                     CppProtoDeserializer &addTo) {
+  auto name = normalizeEnumName(def.getEnumClassName());
+  auto cppName = name;
+  if (name == "TLSModelAttr") {
+    cppName = "TLS_ModelAttr";
+  }
+  cppName = formatv("{0}::{1}", cppNamespace.factualType, cppName).str();
+  auto nameSnake = llvm::convertToSnakeFromCamelCase(name);
+
+  const char *const enumDeserializerFmt = R"(
+auto enumDeser = EnumDeserializer::deserialize{0}{1}({2}.value());
+return {3}::get(&mInfo.ctx, enumDeser);)";
+
+  auto deserializer = formatv(enumDeserializerFmt, cppNamespace.namedType, llvm::StringRef(name).drop_back(4), varName, cppName);
+
+  addTo.addStandardCase(cppName, cppNamespace.namedType, name, deserializer);
+}
+
 static bool emitAttrProtoDeserializer(const RecordKeeper &records,
                                       raw_ostream &os,
                                       bool emitDecl) {
@@ -853,6 +906,7 @@ static bool emitAttrProtoDeserializer(const RecordKeeper &records,
 #include <llvm/ADT/TypeSwitch.h>
 
 using namespace protocir;
+using mlir::Attribute;
 )";
 
   const char *const declHeaderOpen = R"(
@@ -860,6 +914,7 @@ using namespace protocir;
 
 #include "Util.h"
 #include "proto/attr.pb.h"
+#include "cir-tac/Deserializer.h"
 
 #include <clang/CIR/Dialect/IR/CIRAttrs.h>
 #include <mlir/IR/BuiltinAttributes.h>
@@ -871,50 +926,109 @@ namespace protocir {
   const char *const declHeaderClose = R"(
 } // namespace protocir
 )";
-  
+
+  const char *const namedAttrDeserializer = R"(
+  auto nameDeser = deserializeMLIRStringAttr(pAttr.name());
+  auto valueDeser = deserializeMLIRAttribute(pAttr.value());
+  return mlir::NamedAttribute(nameDeser, valueDeser);)";
+
+  const char *const flatSymbolDeserializer = R"(
+auto rootReferenceDeser = deserializeMLIRStringAttr(pAttr.root_reference());
+return mlir::FlatSymbolRefAttr::get(rootReferenceDeser);)";
+
+  const char *const denseArrayDeserializer = R"(
+std::vector<int> contentDeser;
+auto sz = pAttr.raw_data_size();
+for (int i = 0; i < sz; i++) {
+  contentDeser.push_back(pAttr.raw_data(i));
+}
+return mlir::DenseI32ArrayAttr::get(&mInfo.ctx, contentDeser);)";
+
+  const char *const langAttrDeserializer = R"(
+auto langDeser = EnumDeserializer::deserializeCIRSourceLanguage(pAttr.lang());
+auto lAttr = cir::SourceLanguageAttr::get(&mInfo.ctx, langDeser);
+return cir::LangAttr::get(&mInfo.ctx, lAttr);
+)";
+
+  const char *const locationDeserializer = R"(
+  switch (pAttr.location_case()) {
+    case MLIRLocation::LocationCase::kCallSiteLoc: {
+      return deserializeMLIRCallSiteLoc(pAttr.call_site_loc());
+    } break;
+    case MLIRLocation::LocationCase::kFileLineColLoc: {
+      return deserializeMLIRFileLineColLoc(pAttr.file_line_col_loc());
+    } break;
+    case MLIRLocation::LocationCase::kFusedLoc: {
+      return deserializeMLIRFusedLoc(pAttr.fused_loc());
+    } break;
+    case MLIRLocation::LocationCase::kNameLoc: {
+      return deserializeMLIRNameLoc(pAttr.name_loc());
+    } break;
+    case MLIRLocation::LocationCase::kOpaqueLoc: {
+      return deserializeMLIROpaqueLoc(pAttr.opaque_loc());
+    } break;
+    case MLIRLocation::LocationCase::kUnknownLoc: {
+      return deserializeMLIRUnknownLoc(pAttr.unknown_loc());
+    } break;
+    default:
+      llvm_unreachable("NYI");
+      break;
+  };)";
+
   auto mlirDefs = records.getAllDerivedDefinitionsIfDefined("Builtin_Attr");
   auto mlirLocationDefs =
       records.getAllDerivedDefinitionsIfDefined("Builtin_LocationAttr");
   auto cirDefs = records.getAllDerivedDefinitionsIfDefined("CIR_Attr");
   auto cirEnumDefs = records.getAllDerivedDefinitionsIfDefined("EnumAttrInfo");
 
-  auto varName = "pAttr";
+  const auto *varName = "pAttr";
 
   CppProtoDeserializer deserClass("AttrDeserializer", {"mlir::Attribute", "MLIRAttribute"},
-    "MLIRAttribute", varName, declHeaderOpen, declHeaderClose, defHeaderOpen, "");
+    "MLIRAttribute", "Attribute", varName, declHeaderOpen, declHeaderClose, defHeaderOpen, "");
 
-  const char *const mlirNamespace = "mlir::{0}";
-  const char *const cirNamespace = "cir::{0}";
+  deserClass.addField("ModuleInfo &", "mInfo");
+
+  CppTypeInfo mlirNaming = {"mlir", "MLIR"};
+  CppTypeInfo cirNaming = {"cir", "CIR"};
 
   for (auto *def : mlirDefs) {
     AttrDef attr(def);
     auto name = normalizeName(attr.getName());
-    std::string cppName = formatv(mlirNamespace, name).str();
     if (mlirAttributeWhitelist.count(name)) {
-      auto builder = "{0}::get({1})";
-      auto deserializer = deserializeParameters(name, cppName, attr.getParameters(),
-        varName, builder);
-      auto protoCase = formatv("MLIRAttribute::AttributeCase::k{0}", name).str();
-      deserClass.addStandardCase(cppName, name, protoCase, deserializer);
+      aggregateAttribute(attr, mlirNaming, varName, deserClass);
     }
+  }
+  // mlir::NamedAttribute is not an instance of mlir::Attribute, but is used in various situations
+  // adding its deserializer as a helper method so we have access to it, but is not actually present
+  // in the MLIRAttribute switch function
+  deserClass.addHelperMethod("deserializeMLIRNamedAttr", MethodParameter("MLIRNamedAttr", "pAttr"),
+    "mlir::NamedAttribute", namedAttrDeserializer);
+  deserClass.addStandardCase("mlir::FlatSymbolRefAttr", "MLIR", "FlatSymbolRefAttr", flatSymbolDeserializer);
+  deserClass.addStandardCase("mlir::DenseI32ArrayAttr", "MLIR", "DenseI32ArrayAttr", denseArrayDeserializer);
+  deserClass.addStandardCase("mlir::Location", "MLIR", "Location", locationDeserializer);
+  deserClass.addStandardCase("cir::LangAttr", "CIR", "LangAttr", langAttrDeserializer);
+  for (auto *def : mlirLocationDefs) {
+    AttrDef attr(def);
+    aggregateAttribute(attr, mlirNaming, varName, deserClass, false);
   }
   for (auto *def : cirDefs) {
     AttrDef attr(def);
-    if (attr.getName().starts_with("AST")) {
+    if (attr.getName().starts_with("AST")
+        // a special case that needs one extra step before building;
+        // deserializer cannot be generated automatically
+        || attr.getName().ends_with("LangAttr")) {
       continue;
     }
-    auto name = normalizeName(attr.getName());
-    std::string cppName = formatv(cirNamespace, name).str();
-    auto builder = "{0}::get({1})";
-    auto deserializer = deserializeParameters(name, cppName, attr.getParameters(),
-      varName, builder);
-    auto protoCase = formatv("MLIRAttribute::AttributeCase::k{0}", name).str();
-    deserClass.addStandardCase(cppName, name, protoCase, deserializer);
+    aggregateAttribute(attr, cirNaming, varName, deserClass);
+  }
+  for (auto *def : cirEnumDefs) {
+    EnumAttr attr(def);
+    aggregateEnumAttr(attr, cirNaming, varName, deserClass);
   }
 
-  generateCodeFile(deserClass, /*disableClang=*/true, /*addLicense=*/false,
+  generateCodeFile({&deserClass}, /*disableClang=*/true, /*addLicense=*/false,
     emitDecl, os);
-  
+
   return false;
 }
 
