@@ -5,6 +5,7 @@
 #include "mlir/TableGen/Attribute.h"
 #include "mlir/TableGen/Class.h"
 #include "mlir/TableGen/GenInfo.h"
+#include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Support/FormatVariadic.h"
 #include "llvm/Support/raw_ostream.h"
@@ -859,6 +860,32 @@ static bool doesNeedCtx(const std::string &name) {
   return !attributeNoCtxBuilder.count(name);
 }
 
+static void prepareParameters(std::vector<ParamData> &data,
+                              const AttrDef &def) {
+  auto rawData = def.getParameters();
+  auto defName = def.getName();
+  for (auto param : rawData) {
+    // For OpaqueLoc, can make use of fallbackLocation only
+    if (defName == "OpaqueLoc") {
+      if (param.getName() == "underlyingLocation" ||
+          param.getName() == "underlyingTypeID") {
+        continue;
+      }
+    }
+    auto paramName = param.getName().str();
+    auto paramCppType = removeGlobalScopeQualifier(param.getCppType());
+    auto deserName = formatv("{0}Deser", paramName).str();
+    auto valueType = param.isOptional() ? ValueType::OPT : ValueType::REG;
+
+    // This is actually optional although not stated so in the .td file
+    if (defName == "FusedLoc" && param.getName() == "metadata") valueType = ValueType::OPT;
+    if (paramCppType.starts_with("llvm::ArrayRef") || paramCppType.starts_with("ArrayRef"))
+      valueType = ValueType::VAR;
+
+    data.push_back({paramCppType, paramName, deserName, valueType});
+  }
+}
+
 inline static void aggregateAttribute(const AttrDef &def,
                                       const CppTypeInfo &cppNamespace,
                                       const std::string &varName,
@@ -866,8 +893,11 @@ inline static void aggregateAttribute(const AttrDef &def,
                                       bool addAsCase = true) {
   auto name = normalizeName(def.getName());
   std::string cppName = formatv("{0}::{1}", cppNamespace.factualType, name).str();
-  auto deserializer = deserializeParameters(name, cppName, def.getParameters(),
-    varName, name, doesNeedCtx(name));
+  std::vector<ParamData> params;
+  prepareParameters(params, def);
+  const auto *builder = "{0}::get({1})";
+  auto deserializer = deserializeParameters(name, cppName, params,
+    varName, builder, doesNeedCtx(name));
   auto protoName = formatv("{0}{1}", cppNamespace.namedType, name);
   if (addAsCase) addTo.addStandardCase(cppName, cppNamespace.namedType, name, deserializer);
   else addTo.addHelperMethod(formatv("deserialize{0}", protoName),
@@ -928,9 +958,9 @@ namespace protocir {
 )";
 
   const char *const namedAttrDeserializer = R"(
-  auto nameDeser = deserializeMLIRStringAttr(pAttr.name());
-  auto valueDeser = deserializeMLIRAttribute(pAttr.value());
-  return mlir::NamedAttribute(nameDeser, valueDeser);)";
+auto nameDeser = deserializeMLIRStringAttr(pAttr.name());
+auto valueDeser = deserializeMLIRAttribute(pAttr.value());
+return mlir::NamedAttribute(nameDeser, valueDeser);)";
 
   const char *const flatSymbolDeserializer = R"(
 auto rootReferenceDeser = deserializeMLIRStringAttr(pAttr.root_reference());
@@ -950,30 +980,31 @@ auto lAttr = cir::SourceLanguageAttr::get(&mInfo.ctx, langDeser);
 return cir::LangAttr::get(&mInfo.ctx, lAttr);
 )";
 
+  // TODO: add cases through the mlirLocationDefs
   const char *const locationDeserializer = R"(
-  switch (pAttr.location_case()) {
-    case MLIRLocation::LocationCase::kCallSiteLoc: {
-      return deserializeMLIRCallSiteLoc(pAttr.call_site_loc());
-    } break;
-    case MLIRLocation::LocationCase::kFileLineColLoc: {
-      return deserializeMLIRFileLineColLoc(pAttr.file_line_col_loc());
-    } break;
-    case MLIRLocation::LocationCase::kFusedLoc: {
-      return deserializeMLIRFusedLoc(pAttr.fused_loc());
-    } break;
-    case MLIRLocation::LocationCase::kNameLoc: {
-      return deserializeMLIRNameLoc(pAttr.name_loc());
-    } break;
-    case MLIRLocation::LocationCase::kOpaqueLoc: {
-      return deserializeMLIROpaqueLoc(pAttr.opaque_loc());
-    } break;
-    case MLIRLocation::LocationCase::kUnknownLoc: {
-      return deserializeMLIRUnknownLoc(pAttr.unknown_loc());
-    } break;
-    default:
-      llvm_unreachable("NYI");
-      break;
-  };)";
+switch (pAttr.location_case()) {
+  case MLIRLocation::LocationCase::kCallSiteLoc: {
+    return deserializeMLIRCallSiteLoc(pAttr.call_site_loc());
+  } break;
+  case MLIRLocation::LocationCase::kFileLineColLoc: {
+    return deserializeMLIRFileLineColLoc(pAttr.file_line_col_loc());
+  } break;
+  case MLIRLocation::LocationCase::kFusedLoc: {
+    return deserializeMLIRFusedLoc(pAttr.fused_loc());
+  } break;
+  case MLIRLocation::LocationCase::kNameLoc: {
+    return deserializeMLIRNameLoc(pAttr.name_loc());
+  } break;
+  case MLIRLocation::LocationCase::kOpaqueLoc: {
+    return deserializeMLIROpaqueLoc(pAttr.opaque_loc());
+  } break;
+  case MLIRLocation::LocationCase::kUnknownLoc: {
+    return deserializeMLIRUnknownLoc(pAttr.unknown_loc());
+  } break;
+  default:
+    llvm_unreachable("NYI");
+    break;
+};)";
 
   auto mlirDefs = records.getAllDerivedDefinitionsIfDefined("Builtin_Attr");
   auto mlirLocationDefs =
@@ -987,9 +1018,6 @@ return cir::LangAttr::get(&mInfo.ctx, lAttr);
     "MLIRAttribute", "Attribute", varName, declHeaderOpen, declHeaderClose, defHeaderOpen, "");
 
   deserClass.addField("ModuleInfo &", "mInfo");
-
-  CppTypeInfo mlirNaming = {"mlir", "MLIR"};
-  CppTypeInfo cirNaming = {"cir", "CIR"};
 
   for (auto *def : mlirDefs) {
     AttrDef attr(def);
@@ -1034,12 +1062,12 @@ return cir::LangAttr::get(&mInfo.ctx, lAttr);
 
 static bool emitAttrProtoDeserializerSource(const RecordKeeper &records,
   llvm::raw_ostream &os) {
-return emitAttrProtoDeserializer(records, os, /*emitDecl=*/false);
+  return emitAttrProtoDeserializer(records, os, /*emitDecl=*/false);
 }
 
 static bool emitAttrProtoDeserializerHeader(const RecordKeeper &records,
   llvm::raw_ostream &os) {
-return emitAttrProtoDeserializer(records, os, /*emitDecl=*/true);
+  return emitAttrProtoDeserializer(records, os, /*emitDecl=*/true);
 }
 
 static mlir::GenRegistration

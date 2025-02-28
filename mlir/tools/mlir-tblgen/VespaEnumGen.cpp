@@ -411,28 +411,35 @@ static bool emitEnumKotlinBuilder(const RecordKeeper &records,
   return false;
 }
 
-static mlir::GenRegistration genEnumProto("gen-enum-proto",
-                                          "Generate proto file for enums",
-                                          &emitEnumProto);
+static mlir::GenRegistration
+genEnumProto(
+  "gen-enum-proto",
+  "Generate proto file for enums",
+  &emitEnumProto);
 
 static mlir::GenRegistration
-    genEnumProtoSerializerHeader("gen-enum-proto-serializer-header",
-                                 "Generate proto serializer .h for enums",
-                                 &emitEnumProtoSerializerHeader);
+genEnumProtoSerializerHeader(
+  "gen-enum-proto-serializer-header",
+  "Generate proto serializer .h for enums",
+  &emitEnumProtoSerializerHeader);
 
 static mlir::GenRegistration
-    genEnumProtoSerializerSource("gen-enum-proto-serializer-source",
-                                 "Generate proto serializer .cpp for enums",
-                                 &emitEnumProtoSerializerSource);
-
-static mlir::GenRegistration genEnumKotlin("gen-enum-kotlin",
-                                           "Generate kotlin for enums",
-                                           &emitEnumKotlin);
+genEnumProtoSerializerSource(
+  "gen-enum-proto-serializer-source",
+  "Generate proto serializer .cpp for enums",
+  &emitEnumProtoSerializerSource);
 
 static mlir::GenRegistration
-    genEnumKotlinBuilder("gen-enum-kotlin-builder",
-                         "Generate kotlin builder for enums",
-                         &emitEnumKotlinBuilder);
+genEnumKotlin(
+  "gen-enum-kotlin",
+  "Generate kotlin for enums",
+  &emitEnumKotlin);
+
+static mlir::GenRegistration
+genEnumKotlinBuilder(
+  "gen-enum-kotlin-builder",
+  "Generate kotlin builder for enums",
+  &emitEnumKotlinBuilder);
 
 static mlir::GenRegistration
 genEnumProtoDeserializerHeader(

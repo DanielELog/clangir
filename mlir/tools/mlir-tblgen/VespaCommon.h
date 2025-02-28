@@ -117,7 +117,7 @@ public:
     auto &md =
       internalClass.addMethod(methodRet, methodName, params)
         ->body();
-    md.getStream() << methodBody;
+    md.getStream().printReindented(methodBody);
   }
 
   void dumpDecl(llvm::raw_ostream &os) {

@@ -1,4 +1,5 @@
 #include "OpGenHelpers.h"
+#include "VespaCommon.h"
 #include "VespaGen.h"
 
 #include "mlir/TableGen/Attribute.h"
@@ -11,6 +12,7 @@
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/TableGen/Record.h"
 
+#include <cassert>
 #include <set>
 
 using llvm::formatv;
@@ -157,13 +159,6 @@ static std::string normalizeName(StringRef name) {
   }
   return name.str();
 }
-
-enum class ValueType {
-  REG,
-  OPT,
-  VAR,
-  VAROFVAR,
-};
 
 static void serializeValueField(StringRef name, ValueType type, llvm::raw_ostream &os) {
   auto snake = llvm::convertToSnakeFromCamelCase(name);
@@ -368,7 +363,6 @@ static bool emitOpProtoSerializerHeader(const RecordKeeper &records,
                                         raw_ostream &os) {
   os << autogenMessage;
   os << clangOff;
-  os << jacoDBLicense;
   os << "\n";
 
   os << "#pragma once\n";
@@ -428,7 +422,6 @@ static bool emitOpProtoSerializerSource(const RecordKeeper &records,
                                         raw_ostream &os) {
   os << autogenMessage;
   os << clangOff;
-  os << jacoDBLicense;
   os << "\n";
 
   os << "#include \"cir-tac/OpSerializer.h\"\n";
@@ -444,6 +437,7 @@ static bool emitOpProtoSerializerSource(const RecordKeeper &records,
   os << "MLIROp OpSerializer::serializeOperation(mlir::Operation &op) {\n";
   os << "  MLIROp pOp;\n";
   os << "  *pOp.mutable_location() = attributeSerializer.serializeMLIRLocation(op.getLoc());\n";
+  os << "  *pOp.mutable_id() = opCache.getMLIROpID(&op);\n";
   os << "\n";
   os << "  llvm::TypeSwitch<mlir::Operation *>(&op)\n";
 
@@ -602,6 +596,163 @@ static bool emitOpProtoSerializerSource(const RecordKeeper &records,
   os << "\n";
 
   os << clangOn;
+
+  return false;
+}
+
+static void prepareOpAttribute(std::vector<ParamData> &data,
+                               const NamedAttribute &operand) {
+  auto attr = operand.attr;
+
+  if (attr.getStorageType().starts_with("::cir::AST")) {
+    return;
+  }
+
+  const auto &attrName =
+    llvm::convertToSnakeFromCamelCase(operand.name);
+  auto deserName = formatv("{0}Deser", attrName).str();
+  auto paramCppType = removeGlobalScopeQualifier(attr.getStorageType());
+  auto serType = attr.isOptional() ? ValueType::OPT : ValueType::REG;
+
+  data.push_back({paramCppType, attrName, deserName, serType});
+}
+
+static void prepareOpOperand(std::vector<ParamData> &data,
+                             const NamedTypeConstraint &operand) {
+  auto paramName = operand.name.str();
+  llvm::StringRef paramCppType = "mlir::Value";
+  auto deserName = formatv("{0}Deser", paramName).str();
+  ValueType serType;
+  if (operand.isOptional()) {
+    serType = ValueType::OPT;
+  } else if (operand.isVariadicOfVariadic()) {
+    serType = ValueType::VAROFVAR;
+  } else if (operand.isVariadic()) {
+    serType = ValueType::VAR;
+  } else {
+    serType = ValueType::REG;
+  }
+  data.push_back({paramCppType, paramName, deserName, serType});
+}
+
+static void prepareParameters(std::vector<ParamData> &data,
+                              const Operator &op) {
+  for (int i = 0; i != op.getNumResults(); ++i) {
+    const auto &operand = op.getResult(i);
+    prepareOpOperand(data, operand);
+  }
+
+  auto resultsAndOperands = op.getNumResults() + op.getNumOperands();
+  for (int i = 0; i != resultsAndOperands; ++i) {
+    auto operandArg = op.getArgToOperandOrAttribute(i);
+    auto operandKind = operandArg.kind();
+    auto operandId = operandArg.operandOrAttributeIndex();
+    switch (operandKind) {
+      case mlir::tblgen::Operator::OperandOrAttribute::Kind::Operand:
+        prepareOpOperand(data, op.getOperand(operandId));
+        break;
+      case mlir::tblgen::Operator::OperandOrAttribute::Kind::Attribute:
+        prepareOpAttribute(data, op.getAttribute(operandId));
+        break;
+    }
+  }
+
+  for (unsigned i = 0; i != op.getNumSuccessors(); ++i) {
+    const NamedSuccessor &successor = op.getSuccessor(i);
+    auto paramName = successor.name.str();
+    auto deserName = formatv("{0}Deser", paramName);
+    llvm::StringRef paramCppType = "mlir::Block *";
+    auto serType = successor.isVariadic() ? ValueType::VAR : ValueType::REG;
+
+    data.push_back({paramCppType, paramName, deserName, serType});
+  }
+}
+
+static bool checker(const RecordKeeper &records,
+  llvm::raw_ostream &os) {
+  auto defs = getRequestedOpDefinitions(records);
+  checkType("mlir::Block *", os);
+  checkType("mlir::Value", os);
+  for (auto *def : defs) {
+    Operator op(def);
+
+    auto resultsAndOperands = op.getNumResults() + op.getNumOperands();
+    for (int i = 0; i != resultsAndOperands; ++i) {
+      auto operandArg = op.getArgToOperandOrAttribute(i);
+      auto operandKind = operandArg.kind();
+      auto operandId = operandArg.operandOrAttributeIndex();
+      switch (operandKind) {
+        case mlir::tblgen::Operator::OperandOrAttribute::Kind::Operand:
+          break;
+        case mlir::tblgen::Operator::OperandOrAttribute::Kind::Attribute:
+          checkType(removeGlobalScopeQualifier(op.getAttribute(operandId).attr.getStorageType()), os);
+          break;
+      }
+    }
+  }
+}
+
+static void aggregateOperation(const Operator &op,
+                               const CppTypeInfo &cppNamespace,
+                               const std::string &varName,
+                               CppProtoDeserializer &addTo) {
+  auto name = normalizeName(op.getCppClassName());
+  auto cppName = formatv("{0}::{1}", cppNamespace.factualType, op.getCppClassName()).str();
+
+  std::vector<ParamData> params;
+  prepareParameters(params, op);
+
+  const char *const builder = "mInfo.builder.create<{0}>({1})";
+
+  auto deserializer = deserializeParameters(name, cppName, params,
+    varName, builder);
+  addTo.addStandardCase(cppName, cppNamespace.namedType, name, deserializer);
+}
+
+static bool emitOpProtoDeserializer(const RecordKeeper &records,
+                                    raw_ostream &os,
+                                    bool emitDecl) {
+  const char *const defHeaderOpen = R"(
+#include "cir-tac/OpDeserializer.h"
+#include "cir-tac/EnumDeserializer.h"
+
+#include <llvm/ADT/TypeSwitch.h>
+
+using namespace protocir;
+)";
+
+  const char *const declHeaderOpen = R"(
+#pragma once
+
+#include "AttrSerializer.h"
+#include "Util.h"
+#include "proto/op.pb.h"
+#include "proto/setup.pb.h"
+
+#include <clang/CIR/Dialect/IR/CIRDialect.h>
+#include <mlir/IR/Block.h>
+
+namespace protocir {
+)";
+
+  const char *const declHeaderClose = R"(
+} // namespace protocir
+)";
+
+  auto defs = getRequestedOpDefinitions(records);
+
+  const char *const varName = "pOp";
+
+  CppProtoDeserializer deserClass("OpDeserializer", {"mlir::Operation", "MLIROp"},
+    "MLIROp", "Operation", varName, declHeaderOpen, declHeaderClose, defHeaderOpen, "");
+
+  for (auto *def : defs) {
+    Operator op(def);
+    aggregateOperation(op, cirNaming, varName, deserClass);
+  }
+
+  generateCodeFile(deserClass, /*disableClang=*/true, /*addLicense=*/false,
+    emitDecl, os);
 
   return false;
 }
@@ -1037,32 +1188,72 @@ static bool emitOpKotlinInstBuilder(const RecordKeeper &records,
   return false;
 }
 
-static mlir::GenRegistration genOpProto("gen-op-proto",
-                                        "Generate proto file for ops",
-                                        &emitOpProto);
+static bool emitOpProtoDeserializerSource(const RecordKeeper &records,
+  llvm::raw_ostream &os) {
+  return emitOpProtoDeserializer(records, os, /*emitDecl=*/false);
+}
+
+static bool emitOpProtoDeserializerHeader(const RecordKeeper &records,
+  llvm::raw_ostream &os) {
+  return emitOpProtoDeserializer(records, os, /*emitDecl=*/true);
+}
 
 static mlir::GenRegistration
-    genOpProtoSerializerHeader("gen-op-proto-serializer-header",
-                               "Generate proto serializer .h for ops",
-                               &emitOpProtoSerializerHeader);
+genOpProto(
+  "gen-op-proto",
+  "Generate proto file for ops",
+  &emitOpProto);
 
 static mlir::GenRegistration
-    genOpProtoSerializerSource("gen-op-proto-serializer-source",
-                               "Generate proto serializer .cpp for ops",
-                               &emitOpProtoSerializerSource);
+genOpProtoSerializerHeader(
+  "gen-op-proto-serializer-header",
+  "Generate proto serializer .h for ops",
+  &emitOpProtoSerializerHeader);
 
-static mlir::GenRegistration genOpKotlinExprs("gen-op-kotlin-expr",
-                                        "Generate kotlin expr for ops",
-                                        &emitOpKotlinExprs);
+static mlir::GenRegistration
+genOpProtoSerializerSource(
+  "gen-op-proto-serializer-source",
+  "Generate proto serializer .cpp for ops",
+  &emitOpProtoSerializerSource);
 
-static mlir::GenRegistration genOpKotlinInst("gen-op-kotlin-inst",
-                                        "Generate kotlin inst for ops",
-                                        &emitOpKotlinInst);
+static mlir::GenRegistration
+genOpKotlinExprs(
+  "gen-op-kotlin-expr",
+  "Generate kotlin expr for ops",
+  &emitOpKotlinExprs);
 
-static mlir::GenRegistration genOpKotlinExprsBuilder("gen-op-kotlin-expr-builder",
-                                        "Generate kotlin expr builder for ops",
-                                                     &emitOpKotlinExprsBuilder);
+static mlir::GenRegistration
+genOpKotlinInst(
+  "gen-op-kotlin-inst",
+  "Generate kotlin inst for ops",
+  &emitOpKotlinInst);
 
-static mlir::GenRegistration genOpKotliInstBuilder("gen-op-kotlin-inst-builder",
-                                        "Generate kotlin inst builder for ops",
-                                        &emitOpKotlinInstBuilder);
+static mlir::GenRegistration
+genOpKotlinExprsBuilder(
+  "gen-op-kotlin-expr-builder",
+  "Generate kotlin expr builder for ops",
+  &emitOpKotlinExprsBuilder);
+
+static mlir::GenRegistration
+genOpKotliInstBuilder(
+  "gen-op-kotlin-inst-builder",
+  "Generate kotlin inst builder for ops",
+  &emitOpKotlinInstBuilder);
+
+static mlir::GenRegistration
+genOpProtoDeserializerHeader(
+  "gen-op-proto-deserializer-header",
+  "Generate proto deserializer .h for ops",
+  &emitOpProtoDeserializerHeader);
+
+static mlir::GenRegistration
+genOpProtoDeserializerSource(
+  "gen-op-proto-deserializer-source",
+  "Generate proto deserializer .cpp for ops",
+  &emitOpProtoDeserializerSource);
+
+static mlir::GenRegistration
+genOpProtoChecker(
+  "gen-op-proto-check-types",
+  "Check types are correctly matched",
+  &checker);

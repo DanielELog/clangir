@@ -5,6 +5,7 @@
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Support/FormatVariadic.h"
 
+#include <iostream>
 #include <map>
 #include <set>
 
@@ -190,6 +191,10 @@ inline static std::map<llvm::StringRef, const char *const> cppTypeToDeserializer
     {"cir::CIRFPTypeInterface", "Deserializer::getType(mInfo, {0})"},
     {"cir::MethodType", "Deserializer::getType(mInfo, {0})"},
 
+    {"mlir::Value", "Deserializer::deserializeValue(fInfo, {0})"},
+
+    {"mlir::Block *", "Deserializer::getBlock(fInfo, {0})"},
+
     {"Attribute", "deserializeMLIRAttribute({0})"},
     {"mlir::Attribute", "deserializeMLIRAttribute({0})"},
     {"mlir::TypedAttr", "deserializeMLIRAttribute({0})"},
@@ -219,6 +224,31 @@ inline static std::map<llvm::StringRef, const char *const> cppTypeToDeserializer
     {"sob::SignedOverflowBehavior", "EnumDeserializer::deserializeCIRSignedOverflowBehavior({0})"},
 
     {"SourceLanguageAttr", "EnumDeserializer::deserializeCIRSourceLanguage({0})"},
+
+    {"cir::AtomicFetchKind", "EnumDeserializer::deserializeCIRAtomicFetchKind({0})"},
+    {"cir::AwaitKind", "EnumDeserializer::deserializeCIRAwaitKind({0})"},
+    {"cir::BinOpKind", "EnumDeserializer::deserializeCIRBinOpKind({0})"},
+    {"cir::BinOpOverflowKind", "EnumDeserializer::deserializeCIRBinOpOverflowKind({0})"},
+    {"cir::CallingConv", "EnumDeserializer::deserializeCIRCallingConv({0})"},
+    {"cir::CaseOpKind", "EnumDeserializer::deserializeCIRCaseOpKind({0})"},
+    {"cir::CastKind", "EnumDeserializer::deserializeCIRCastKind({0})"},
+    {"cir::CatchParamKind", "EnumDeserializer::deserializeCIRCatchParamKind({0})"},
+    {"cir::CmpOpKind", "EnumDeserializer::deserializeCIRCmpOpKind({0})"},
+    {"cir::CmpOrdering", "EnumDeserializer::deserializeCIRCmpOrdering({0})"},
+    {"cir::ComplexBinOpKind", "EnumDeserializer::deserializeCIRComplexBinOpKind({0})"},
+    {"cir::ComplexRangeKind", "EnumDeserializer::deserializeCIRComplexRangeKind({0})"},
+    {"cir::DynamicCastKind", "EnumDeserializer::deserializeCIRDynamicCastKind({0})"},
+    {"cir::GlobalLinkageKind", "EnumDeserializer::deserializeCIRGlobalLinkageKind({0})"},
+    {"cir::InlineKind", "EnumDeserializer::deserializeCIRInlineKind({0})"},
+    {"cir::MemOrder", "EnumDeserializer::deserializeCIRMemOrder({0})"},
+    {"cir::sob::SignedOverflowBehavior", "EnumDeserializer::deserializeCIRSignedOverflowBehavior({0})"},
+    {"cir::SizeInfoType", "EnumDeserializer::deserializeCIRSizeInfoType({0})"},
+    {"cir::SourceLanguage", "EnumDeserializer::deserializeCIRSourceLanguage({0})"},
+    {"cir::TLS_Model", "EnumDeserializer::deserializeCIRTLSModel({0})"},
+    {"cir::UnaryOpKind", "EnumDeserializer::deserializeCIRUnaryOpKind({0})"},
+    {"cir::VisibilityKind", "EnumDeserializer::deserializeCIRVisibilityKind({0})"},
+    {"cir::StructType::RecordKind", "EnumDeserializer::deserializeCIRRecordKind({0})"},
+    {"mlir::IntegerType::SignednessSemantics", "EnumDeserializer::deserializeMLIRSignednessSemantics({0})"},
 
     {"APInt", "deserializeAPInt(typeDeser, {0})"},
     {"llvm::APInt", "deserializeAPInt(typeDeser, {0})"},
@@ -373,7 +403,7 @@ std::string makeFullCppType(llvm::StringRef cppType) {
   return cppType.str();
 }
 
-llvm::StringRef removeGlobalScopeQualifier(llvm::StringRef &type) {
+llvm::StringRef vespa::removeGlobalScopeQualifier(llvm::StringRef type) {
   if (type.starts_with("::")) {
     return type.drop_front(2);
   }
@@ -493,6 +523,11 @@ std::string deserializeElement(llvm::StringRef typ,
   return varName.str();
 }
 
+void vespa::checkType(llvm::StringRef typ, llvm::raw_ostream &os) {
+  if (!cppTypeToDeserializerCall.count(typ) && !primitiveSerializable.count(typ))
+    os << formatv("{0} has no deserializer and is nor primitive!\n\n");
+}
+
 std::string deserializeOptional(llvm::StringRef typ,
                                 llvm::StringRef varName,
                                 llvm::StringRef deserName,
@@ -533,45 +568,65 @@ for (auto i = 0; i < {1}.{3}_size(); i++) {{
     elDeser).str();
 }
 
-void vespa::deserializeParameter(mlir::tblgen::AttrOrTypeParameter &p,
+std::string deserializeVarOfVar(llvm::StringRef typ,
+                                llvm::StringRef varName,
+                                llvm::StringRef deserName,
+                                std::string fieldName) {
+  const char *const deserializerBody = R"(
+std::vector<std::vector<{0}>> {2};
+for (auto i = 0; i < {1}.{3}_size(); i++) {{
+  {5}
+  {2}.push_back({4});
+}
+)";
+
+  auto innerArrayName = formatv("{0}Inner", varName).str();
+  auto innerFieldVar = formatv("{0}.{1}()", varName, fieldName).str();
+  auto innerDeser =
+    deserializeArray(typ, innerFieldVar, innerArrayName, "list");
+
+  return formatv(deserializerBody, typ, varName, deserName, fieldName,
+    innerArrayName, innerDeser).str();
+}
+
+void vespa::deserializeParameter(const ParamData &p,
                                  llvm::StringRef varName,
-                                 llvm::StringRef deserName,
-                                 llvm::StringRef defName,
                                  llvm::raw_ostream &os) {
-  auto name = p.getName();
+  auto name = p.name;
   auto protoField = llvm::convertToSnakeFromCamelCase(name);
-  auto type = p.getCppType();
-  type = removeGlobalScopeQualifier(type);
+  auto type = llvm::StringRef(p.cppType);
 
   std::string elDeser;
-  if (type.starts_with("llvm::ArrayRef") || type.starts_with("ArrayRef")) {
-    elDeser = deserializeArray(type, varName, deserName, protoField);
-  }
-  else if (p.isOptional() ||
-            // This is actually optional although not stated so in the .td file
-           (defName == "FusedLoc" && p.getName() == "metadata")) {
-    elDeser = deserializeOptional(type, varName, deserName, protoField);
-  }
-  else {
-    auto fieldAccessor = formatv("{0}.{1}()", varName, protoField).str();
-    elDeser = formatv("auto {0} = {1};\n", deserName,
-      deserializeElement(type, fieldAccessor)).str();
+  switch (p.serType) {
+    case ValueType::VAR:
+      elDeser = deserializeArray(type, varName, p.deserName, protoField);
+      break;
+    case ValueType::VAROFVAR:
+      elDeser = deserializeVarOfVar(type, varName, p.deserName, protoField);
+      break;
+    case ValueType::OPT:
+      elDeser = deserializeOptional(type, varName, p.deserName, protoField);
+      break;
+    case ValueType::REG:
+      auto fieldAccessor = formatv("{0}.{1}()", varName, protoField).str();
+      elDeser = formatv("auto {0} = {1};\n", p.deserName,
+        deserializeElement(type, fieldAccessor)).str();
+      break;
   }
   os << elDeser;
 }
 
 std::string vespa::deserializeParameters(llvm::StringRef ty,
                                          llvm::StringRef cppTy,
-                                         llvm::ArrayRef<mlir::tblgen::AttrOrTypeParameter> ps,
+                                         llvm::ArrayRef<ParamData> ps,
                                          llvm::StringRef varName,
-                                         llvm::StringRef defName,
+                                         const char *builder,
                                          bool doesNeedCtx) {
   std::string serializerRaw;
   llvm::raw_string_ostream os(serializerRaw);
   std::string builderParams;
   llvm::raw_string_ostream bp(builderParams);
   std::string sep = ", ";
-  const auto *builder = "{0}::get({1})";
   bool firstParam = true;
 
   if (doesNeedCtx) {
@@ -579,28 +634,18 @@ std::string vespa::deserializeParameters(llvm::StringRef ty,
     firstParam = false;
   }
 
-  for (auto param : ps) {
-    // For OpaqueLoc, can make use of fallbackLocation only
-    if (defName == "OpaqueLoc") {
-      if (param.getName() == "underlyingLocation" ||
-          param.getName() == "underlyingTypeID") {
-        continue;
-      }
-    }
-    auto paramName = param.getName();
-    auto paramCppType = param.getCppType();
-    auto deserName = formatv("{0}Deser", paramName).str();
+  for (const auto& param : ps) {
     if (!firstParam) bp << sep;
     // sometimes builders expect certain types to be passed
     // if that's the case, we have to cast it to the expected form,
     // since everything is abstracted to MLIRType in the serialized form
 
     // TODO: generalize this?
-    if ((paramName == "type" && paramCppType != "::mlir::Type") ||
-        ((paramName == "real" || paramName == "imag") && paramCppType != "::mlir::Attribute"))
-      bp << formatv("mlir::cast<{0}>({1})", paramCppType, deserName);
-    else bp << deserName;
-    deserializeParameter(param, varName, deserName, defName, os);
+    if ((param.name == "type" && param.cppType != "::mlir::Type") ||
+        ((param.name == "real" || param.name == "imag") && param.cppType != "::mlir::Attribute"))
+      bp << formatv("mlir::cast<{0}>({1})", param.cppType, param.deserName);
+    else bp << param.deserName;
+    deserializeParameter(param, varName, os);
     firstParam = false;
   }
   auto built = formatv(builder, cppTy, builderParams);
