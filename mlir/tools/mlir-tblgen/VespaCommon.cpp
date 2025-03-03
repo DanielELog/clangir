@@ -1,10 +1,11 @@
 #include "VespaCommon.h"
 #include "mlir/TableGen/Class.h"
+#include "llvm/ADT/SmallVector.h"
 
 using namespace vespa;
 
 void CppSwitchSource::printCodeBlock(raw_indented_ostream &os,
-                               std::string code) {
+                                     std::string code) {
   os.indent();
   os.printReindented(code);
   os.unindent();
@@ -12,9 +13,9 @@ void CppSwitchSource::printCodeBlock(raw_indented_ostream &os,
 
 void CppProtoSerializer::dumpSwitchFunc(raw_indented_ostream &os) {
   raw_indented_ostream::DelimitedScope scope(os);
-  os << formatv("{0} {1};\n", resTy.factualType, serName);
+  os << formatv("{0} {1};\n", resTy.namedType, serName);
   if (preCaseBody) os.printReindented(preCaseBody.value());
-  os << formatv("llvm::TypeSwitch<{0}>({1})\n", inputTy, inputName);
+  os << formatv("llvm::TypeSwitch<{0}>({1})\n", resTy.factualType, inputName);
   for (auto c : cases) {
     os << formatv(".Case<{0}>([&]({0} {1}) {{\n", c.cppType, inputName);
     printCodeBlock(os, c.caseBody);
@@ -23,7 +24,7 @@ void CppProtoSerializer::dumpSwitchFunc(raw_indented_ostream &os) {
   os << formatv(".Default([]({0} {1}) {{\n"
                 "  {1}.dump();\n"
                 "  llvm_unreachable(\"unknown {1} during serialization\");\n"
-                "});\n", inputTy, inputName);
+                "});\n", resTy.factualType, inputName);
   if (postCaseBody) os.printReindented(postCaseBody.value());
   os << formatv("return {0};", serName);
 }
@@ -47,14 +48,30 @@ void CppProtoDeserializer::dumpSwitchFunc(raw_indented_ostream &os) {
   if (postCaseBody) os.printReindented(postCaseBody.value());
 }
 
-Method *CppProtoSerializer::addCaseMethod(const SwitchCase &cas, std::string methodName) {
-  return internalClass.addMethod(cas.protoType, methodName,
-                                 MethodParameter(cas.cppType, inputName));
+Method *CppProtoSerializer::addMethod(std::string methodName, std::string returnType,
+                                      llvm::ArrayRef<MethodParameter> params) {
+  return internalClass.addMethod(returnType, methodName, params);
 }
 
-Method *CppProtoDeserializer::addCaseMethod(const SwitchCase &cas, std::string methodName) {
-  return internalClass.addMethod(cas.cppType, methodName,
-                                 MethodParameter(cas.protoType, inputName));
+Method *CppProtoSerializer::addTranslatorMethod(std::string protoType, std::string cppType,
+                                                std::string methodName) {
+  llvm::SmallVector<MethodParameter, 1> param{{cppType, inputName}};
+  return addMethod(methodName, protoType, param);
+}
+
+Method *CppProtoDeserializer::addMethod(std::string methodName, std::string returnType,
+                                        llvm::ArrayRef<MethodParameter> params) {
+  std::vector<MethodParameter> staticParams = funcParams;
+  for (const auto &param : params) {
+    staticParams.emplace_back(param);
+  }
+  return internalClass.addMethod<Method::Static>(returnType, methodName, staticParams);
+}
+
+Method *CppProtoDeserializer::addTranslatorMethod(std::string protoType, std::string cppType,
+                                                  std::string methodName) {
+  llvm::SmallVector<MethodParameter, 1> param{{protoType, inputName}};
+  return addMethod(methodName, cppType, param);
 }
 
 void CppSwitchSource::genCtr() {
@@ -76,14 +93,13 @@ void CppSwitchSource::genClass() {
     genCtr();
 
   auto &mainFuncBody =
-    internalClass.addMethod(resTy.factualType, formatv("{0}{1}", funcName, resTy.namedType),
-                            MethodParameter(inputTy, inputName))
+    addTranslatorMethod(resTy.namedType, resTy.factualType, formatv("{0}{1}", funcName, resTy.namedType))
     ->body();
 
   dumpSwitchFunc(mainFuncBody.getStream());
 
   for (auto cas : cases) {
-    auto *method = addCaseMethod(cas, formatv("{0}{1}", funcName, cas.protoType));
+    auto *method = addTranslatorMethod(cas.protoType, cas.cppType, formatv("{0}{1}", funcName, cas.protoType));
     printCodeBlock(method->body().getStream(), cas.translatorBody);
   }
 }

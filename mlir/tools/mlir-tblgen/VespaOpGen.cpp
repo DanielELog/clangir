@@ -3,6 +3,7 @@
 #include "VespaGen.h"
 
 #include "mlir/TableGen/Attribute.h"
+#include "mlir/TableGen/Class.h"
 #include "mlir/TableGen/GenInfo.h"
 #include "mlir/TableGen/Operator.h"
 #include "mlir/TableGen/Successor.h"
@@ -603,24 +604,42 @@ static bool emitOpProtoSerializerSource(const RecordKeeper &records,
 static void prepareOpAttribute(std::vector<ParamData> &data,
                                const NamedAttribute &operand) {
   auto attr = operand.attr;
-
-  if (attr.getStorageType().starts_with("::cir::AST")) {
+  if (operand.name.ends_with("segments")) {
     return;
   }
 
   const auto &attrName =
     llvm::convertToSnakeFromCamelCase(operand.name);
   auto deserName = formatv("{0}Deser", attrName).str();
+  auto fixCppType = fixPrefix(attr.getStorageType().str());
+  if (fixCppType == "CIRTLS_ModelAttr") {
+    fixCppType = "CIRTLSModelAttr";
+  }
   auto paramCppType = removeGlobalScopeQualifier(attr.getStorageType());
   auto serType = attr.isOptional() ? ValueType::OPT : ValueType::REG;
 
-  data.push_back({paramCppType, attrName, deserName, serType});
+  // ast attributes are not serialized at the moment
+  if (attr.getStorageType().starts_with("::cir::AST")) {
+    data.push_back({paramCppType, attrName, deserName, ValueType::EMPTY});
+    return;
+  }
+
+  // EnumAttrs are stored purely as Enums
+  // we need to create Attr from it for the Op builder
+  if (isEnum(attr)) {
+    auto enumDeserializer = "EnumDeserializer::deserialize" + llvm::StringRef(fixCppType).drop_back(4).str();
+    data.push_back({paramCppType, attrName, deserName, serType,
+      (paramCppType + "::get(&mInfo.ctx, " + enumDeserializer + "($$))").str()});
+  }
+  else {
+    data.push_back({paramCppType, attrName, deserName, serType});
+  }
 }
 
 static void prepareOpOperand(std::vector<ParamData> &data,
-                             const NamedTypeConstraint &operand) {
+                             const NamedTypeConstraint &operand,
+                             llvm::StringRef paramCppType) {
   auto paramName = operand.name.str();
-  llvm::StringRef paramCppType = "mlir::Value";
   auto deserName = formatv("{0}Deser", paramName).str();
   ValueType serType;
   if (operand.isOptional()) {
@@ -639,17 +658,17 @@ static void prepareParameters(std::vector<ParamData> &data,
                               const Operator &op) {
   for (int i = 0; i != op.getNumResults(); ++i) {
     const auto &operand = op.getResult(i);
-    prepareOpOperand(data, operand);
+    prepareOpOperand(data, operand, "mlir::Type");
   }
 
-  auto resultsAndOperands = op.getNumResults() + op.getNumOperands();
+  auto resultsAndOperands = op.getNumAttributes() + op.getNumOperands();
   for (int i = 0; i != resultsAndOperands; ++i) {
     auto operandArg = op.getArgToOperandOrAttribute(i);
     auto operandKind = operandArg.kind();
     auto operandId = operandArg.operandOrAttributeIndex();
     switch (operandKind) {
       case mlir::tblgen::Operator::OperandOrAttribute::Kind::Operand:
-        prepareOpOperand(data, op.getOperand(operandId));
+        prepareOpOperand(data, op.getOperand(operandId), "mlir::Value");
         break;
       case mlir::tblgen::Operator::OperandOrAttribute::Kind::Attribute:
         prepareOpAttribute(data, op.getAttribute(operandId));
@@ -702,7 +721,13 @@ static void aggregateOperation(const Operator &op,
   std::vector<ParamData> params;
   prepareParameters(params, op);
 
-  const char *const builder = "mInfo.builder.create<{0}>({1})";
+  // TryOp also expects regions count as the last argument
+  // regions are not serialized at the moment
+  const char *const builder = name == "TryOp"
+    ? "return mInfo.builder.create<{0}>(mInfo.builder.getUnknownLoc(), {1}, 0);"
+    : params.empty()
+    ? "return mInfo.builder.create<{0}>(mInfo.builder.getUnknownLoc(){1});"
+    : "return mInfo.builder.create<{0}>(mInfo.builder.getUnknownLoc(), {1});";
 
   auto deserializer = deserializeParameters(name, cppName, params,
     varName, builder);
@@ -715,6 +740,8 @@ static bool emitOpProtoDeserializer(const RecordKeeper &records,
   const char *const defHeaderOpen = R"(
 #include "cir-tac/OpDeserializer.h"
 #include "cir-tac/EnumDeserializer.h"
+#include "cir-tac/AttrDeserializer.h"
+#include "cir-tac/Deserializer.h"
 
 #include <llvm/ADT/TypeSwitch.h>
 
@@ -724,7 +751,6 @@ using namespace protocir;
   const char *const declHeaderOpen = R"(
 #pragma once
 
-#include "AttrSerializer.h"
 #include "Util.h"
 #include "proto/op.pb.h"
 #include "proto/setup.pb.h"
@@ -743,8 +769,15 @@ namespace protocir {
 
   const char *const varName = "pOp";
 
-  CppProtoDeserializer deserClass("OpDeserializer", {"mlir::Operation", "MLIROp"},
-    "MLIROp", "Operation", varName, declHeaderOpen, declHeaderClose, defHeaderOpen, "");
+  std::vector<mlir::tblgen::MethodParameter> params = {
+    {"FunctionInfo &", "fInfo"},
+    {"ModuleInfo &", "mInfo"}
+  };
+
+  CppProtoDeserializer deserClass("OpDeserializer", {"mlir::Operation *", "MLIROp"},
+    "Operation", varName, declHeaderOpen, declHeaderClose, defHeaderOpen, "", params);
+
+  deserClass.setStandardCaseBody("return deserialize{0}({3}{1}.{2}()).getOperation();\n");
 
   for (auto *def : defs) {
     Operator op(def);

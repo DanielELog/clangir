@@ -1,9 +1,12 @@
 #include "VespaGen.h"
+#include "mlir/Support/IndentedOstream.h"
 
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/StringExtras.h"
 #include "llvm/ADT/StringRef.h"
+#include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/FormatVariadic.h"
+#include "llvm/Support/raw_ostream.h"
 
 #include <iostream>
 #include <map>
@@ -195,27 +198,28 @@ inline static std::map<llvm::StringRef, const char *const> cppTypeToDeserializer
 
     {"mlir::Block *", "Deserializer::getBlock(fInfo, {0})"},
 
-    {"Attribute", "deserializeMLIRAttribute({0})"},
-    {"mlir::Attribute", "deserializeMLIRAttribute({0})"},
-    {"mlir::TypedAttr", "deserializeMLIRAttribute({0})"},
-    {"MemRefLayoutAttrInterface", "deserializeMLIRAttribute({0})"},
+    {"Attribute", "AttrDeserializer::deserializeMLIRAttribute(mInfo, {0})"},
+    {"mlir::Attribute", "AttrDeserializer::deserializeMLIRAttribute(mInfo, {0})"},
+    {"mlir::TypedAttr", "AttrDeserializer::deserializeMLIRAttribute(mInfo, {0})"},
+    {"MemRefLayoutAttrInterface", "AttrDeserializer::deserializeMLIRAttribute(mInfo, {0})"},
 
-    {"StringAttr", "deserializeMLIRStringAttr({0})"},
-    {"mlir::StringAttr", "deserializeMLIRStringAttr({0})"},
+    {"StringAttr", "AttrDeserializer::deserializeMLIRStringAttr(mInfo, {0})"},
+    {"mlir::StringAttr", "AttrDeserializer::deserializeMLIRStringAttr(mInfo, {0})"},
 
-    {"mlir::ArrayAttr", "deserializeMLIRArrayAttr({0})"},
-    {"mlir::IntegerAttr", "deserializeMLIRIntegerAttr({0})"},
-    {"mlir::DictionaryAttr", "deserializeMLIRDictionaryAttr({0})"},
-    {"mlir::TypeAttr", "deserializeMLIRTypeAttr({0})"},
-    {"mlir::FlatSymbolRefAttr", "deserializeMLIRFlatSymbolRefAttr({0})"},
-    {"std::optional<mlir::FlatSymbolRefAttr>", "deserializeMLIRFlatSymbolRefAttr({0})"},
+    {"mlir::ArrayAttr", "AttrDeserializer::deserializeMLIRArrayAttr(mInfo, {0})"},
+    {"mlir::IntegerAttr", "AttrDeserializer::deserializeMLIRIntegerAttr(mInfo, {0})"},
+    {"mlir::DictionaryAttr", "AttrDeserializer::deserializeMLIRDictionaryAttr(mInfo, {0})"},
+    {"mlir::TypeAttr", "AttrDeserializer::deserializeMLIRTypeAttr(mInfo, {0})"},
+    {"mlir::FlatSymbolRefAttr", "AttrDeserializer::deserializeMLIRFlatSymbolRefAttr(mInfo, {0})"},
+    {"std::optional<mlir::FlatSymbolRefAttr>", "AttrDeserializer::deserializeMLIRFlatSymbolRefAttr(mInfo, {0})"},
+    {"mlir::UnitAttr", "AttrDeserializer::deserializeMLIRUnitAttr(mInfo, {0})"},
 
-    {"NamedAttribute", "deserializeMLIRNamedAttr({0})"},
+    {"NamedAttribute", "AttrDeserializer::deserializeMLIRNamedAttr(mInfo, {0})"},
 
-    {"Location", "deserializeMLIRLocation({0})"},
+    {"Location", "AttrDeserializer::deserializeMLIRLocation(mInfo, {0})"},
 
-    {"cir::GlobalViewAttr", "deserializeCIRGlobalViewAttr({0})"},
-    {"cir::IntAttr", "deserializeCIRIntAttr({0})"},
+    {"cir::GlobalViewAttr", "AttrDeserializer::deserializeCIRGlobalViewAttr(mInfo, {0})"},
+    {"cir::IntAttr", "AttrDeserializer::deserializeCIRIntAttr(mInfo, {0})"},
 
     {"SignednessSemantics", "EnumDeserializer::deserializeMLIRSignednessSemantics({0})"},
     {"CmpOrdering", "EnumDeserializer::deserializeCIRCmpOrdering({0})"},
@@ -410,7 +414,7 @@ llvm::StringRef vespa::removeGlobalScopeQualifier(llvm::StringRef type) {
   return type;
 }
 
-llvm::StringRef removeArray(llvm::StringRef &type) {
+llvm::StringRef vespa::removeArray(llvm::StringRef &type) {
   if (type.starts_with("llvm::ArrayRef")) {
     return type.drop_front(15).drop_back(1);
   }
@@ -513,22 +517,45 @@ std::string vespa::serializeParameters(llvm::StringRef ty,
   return serializerRaw;
 }
 
-std::string deserializeElement(llvm::StringRef typ,
-                               llvm::StringRef varName) {
+std::string createDeserializerCall(const ParamData &p,
+                                   llvm::StringRef var) {
+  auto typ = p.cppType;
+  if (p.customDeserializer.has_value()) {
+    auto call = llvm::StringRef(p.customDeserializer.value()).split("$$");
+    return call.first.str() + var.str() + call.second.str();
+  }
   if (cppTypeToDeserializerCall.count(typ)) {
     const auto *deserializer = cppTypeToDeserializerCall.at(typ);
-    return formatv(deserializer, varName).str();
+    return formatv(deserializer, var).str();
   }
-  assert(primitiveSerializable.count(typ));
-  return varName.str();
+  if (typ.ends_with("Attr")) {
+    auto namePair = typ.split("::");
+    std::string protoName = ((namePair.first == "cir" ? "CIR" : "MLIR") + namePair.second).str();
+    return "AttrDeserializer::deserialize" + protoName + "(mInfo, " + var.str() + ")";
+  }
+  if (primitiveSerializable.count(typ)) {
+    return var.str();
+  }
+  llvm_unreachable(formatv("no deserializer specified for {0}!", typ));
+}
+
+std::string deserializeElement(const ParamData &p,
+                               llvm::StringRef varName) {
+  // if (cppTypeToDeserializerCall.count(typ)) {
+  //   const auto *deserializer = cppTypeToDeserializerCall.at(typ);
+  //   return formatv(deserializer, varName).str();
+  // }
+  // assert(primitiveSerializable.count(typ));
+  // return varName.str();
+  return createDeserializerCall(p, varName);
 }
 
 void vespa::checkType(llvm::StringRef typ, llvm::raw_ostream &os) {
   if (!cppTypeToDeserializerCall.count(typ) && !primitiveSerializable.count(typ))
-    os << formatv("{0} has no deserializer and is nor primitive!\n\n");
+    os << formatv("{0} has no deserializer nor is primitive!\n\n");
 }
 
-std::string deserializeOptional(llvm::StringRef typ,
+std::string deserializeOptional(const ParamData &p,
                                 llvm::StringRef varName,
                                 llvm::StringRef deserName,
                                 std::string fieldName) {
@@ -541,13 +568,14 @@ if ({1}.has_{3}()) {{
 }
 )";
 
-  auto elDeser = deserializeElement(typ, "elem");
+  auto typ = p.cppType;
+  auto elDeser = deserializeElement(p, "elem");
 
   return formatv(deserializerBody, typ, varName, deserName, fieldName,
     elDeser).str();
 }
 
-std::string deserializeArray(llvm::StringRef typ,
+std::string deserializeArray(const ParamData &p,
                              llvm::StringRef varName,
                              llvm::StringRef deserName,
                              std::string fieldName) {
@@ -559,34 +587,56 @@ for (auto i = 0; i < {1}.{3}_size(); i++) {{
 }
 )";
 
-  auto elTyp = removeArray(typ);
-  auto elDeser = deserializeElement(elTyp, "elem");
-
-  auto fullElTyp = makeFullCppType(elTyp);
+  auto typ = p.cppType;
+  auto elDeser = deserializeElement(p, "elem");
+  auto fullElTyp = makeFullCppType(typ);
 
   return formatv(deserializerBody, fullElTyp, varName, deserName, fieldName,
     elDeser).str();
 }
 
-std::string deserializeVarOfVar(llvm::StringRef typ,
+std::string deserializeVarOfVar(const ParamData &p,
                                 llvm::StringRef varName,
                                 llvm::StringRef deserName,
                                 std::string fieldName) {
-  const char *const deserializerBody = R"(
-std::vector<std::vector<{0}>> {2};
-for (auto i = 0; i < {1}.{3}_size(); i++) {{
-  {5}
-  {2}.push_back({4});
+  const char *const deserializerBodyStart = R"(
+std::vector<{0}> {2};
+for (auto j = 0; j < {1}.{3}_size(); j++) {{)";
+
+  const char *const deserializerBodyEnd = R"(
+  {0}.push_back({1});
 }
 )";
 
+  auto typ = p.cppType;
   auto innerArrayName = formatv("{0}Inner", varName).str();
-  auto innerFieldVar = formatv("{0}.{1}()", varName, fieldName).str();
+  auto innerFieldVar = formatv("{0}.{1}(j)", varName, fieldName).str();
   auto innerDeser =
-    deserializeArray(typ, innerFieldVar, innerArrayName, "list");
+    deserializeArray(p, innerFieldVar, innerArrayName, "list");
 
-  return formatv(deserializerBody, typ, varName, deserName, fieldName,
-    innerArrayName, innerDeser).str();
+  std::string deserializer;
+  llvm::raw_string_ostream rawOs(deserializer);
+  mlir::raw_indented_ostream os(rawOs);
+
+  std::string outerVectorType = formatv("std::vector<{0}>", typ);
+  if (typ == "mlir::Value") {
+    outerVectorType = "mlir::ValueRange";
+  }
+  if (typ == "mlir::Block *") {
+    outerVectorType = "mlir::BlockRange";
+  }
+  os << formatv(deserializerBodyStart, outerVectorType, varName, deserName, fieldName,
+    innerArrayName).str();
+  os.indent();
+  os.printReindented(innerDeser);
+  os.unindent();
+  os << formatv(deserializerBodyEnd, deserName, innerArrayName);
+
+  return deserializer;
+}
+
+std::string deserializeEmpty(const ParamData &p) {
+  return formatv("{0} {1};\n", p.cppType, p.deserName);
 }
 
 void vespa::deserializeParameter(const ParamData &p,
@@ -594,23 +644,25 @@ void vespa::deserializeParameter(const ParamData &p,
                                  llvm::raw_ostream &os) {
   auto name = p.name;
   auto protoField = llvm::convertToSnakeFromCamelCase(name);
-  auto type = llvm::StringRef(p.cppType);
 
   std::string elDeser;
   switch (p.serType) {
     case ValueType::VAR:
-      elDeser = deserializeArray(type, varName, p.deserName, protoField);
+      elDeser = deserializeArray(p, varName, p.deserName, protoField);
       break;
     case ValueType::VAROFVAR:
-      elDeser = deserializeVarOfVar(type, varName, p.deserName, protoField);
+      elDeser = deserializeVarOfVar(p, varName, p.deserName, protoField);
       break;
     case ValueType::OPT:
-      elDeser = deserializeOptional(type, varName, p.deserName, protoField);
+      elDeser = deserializeOptional(p, varName, p.deserName, protoField);
+      break;
+    case ValueType::EMPTY:
+      elDeser = deserializeEmpty(p);
       break;
     case ValueType::REG:
       auto fieldAccessor = formatv("{0}.{1}()", varName, protoField).str();
       elDeser = formatv("auto {0} = {1};\n", p.deserName,
-        deserializeElement(type, fieldAccessor)).str();
+        deserializeElement(p, fieldAccessor)).str();
       break;
   }
   os << elDeser;
@@ -620,7 +672,7 @@ std::string vespa::deserializeParameters(llvm::StringRef ty,
                                          llvm::StringRef cppTy,
                                          llvm::ArrayRef<ParamData> ps,
                                          llvm::StringRef varName,
-                                         const char *builder,
+                                         const char *finisher,
                                          bool doesNeedCtx) {
   std::string serializerRaw;
   llvm::raw_string_ostream os(serializerRaw);
@@ -641,15 +693,15 @@ std::string vespa::deserializeParameters(llvm::StringRef ty,
     // since everything is abstracted to MLIRType in the serialized form
 
     // TODO: generalize this?
-    if ((param.name == "type" && param.cppType != "::mlir::Type") ||
-        ((param.name == "real" || param.name == "imag") && param.cppType != "::mlir::Attribute"))
+    if ((param.name == "type" && param.cppType != "::mlir::Type")
+        || ((param.name == "real" || param.name == "imag") && param.cppType != "::mlir::Attribute")
+        || (param.cppType == "mlir::TypedAttr"))
       bp << formatv("mlir::cast<{0}>({1})", param.cppType, param.deserName);
     else bp << param.deserName;
     deserializeParameter(param, varName, os);
     firstParam = false;
   }
-  auto built = formatv(builder, cppTy, builderParams);
-  os << formatv("\nreturn {0};\n", built);
+  os << formatv(finisher, cppTy, builderParams);
 
   return serializerRaw;
 }

@@ -13,6 +13,7 @@
 #include "mlir/TableGen/Operator.h"
 
 #include <cassert>
+#include <optional>
 
 namespace vespa {
 
@@ -24,6 +25,7 @@ enum class ValueType {
   OPT,
   VAR,
   VAROFVAR,
+  EMPTY,
 };
 
 struct ParamData {
@@ -31,6 +33,7 @@ struct ParamData {
   std::string name;
   std::string deserName;
   ValueType serType;
+  std::optional<std::string> customDeserializer = std::nullopt;
 };
 
 inline constexpr const char *autogenMessage =
@@ -74,6 +77,8 @@ llvm::StringRef getProtoType(mlir::tblgen::AttrOrTypeParameter &p);
 
 llvm::StringRef removeGlobalScopeQualifier(llvm::StringRef type);
 
+llvm::StringRef removeArray(llvm::StringRef &type);
+
 void serializeParameter(mlir::tblgen::AttrOrTypeParameter &p,
                         llvm::StringRef varName,
                         llvm::raw_ostream &os);
@@ -90,7 +95,7 @@ std::string deserializeParameters(llvm::StringRef ty,
                                   llvm::StringRef cppTy,
                                   llvm::ArrayRef<ParamData> ps,
                                   llvm::StringRef varName,
-                                  const char *builder,
+                                  const char *finisher,
                                   bool doesNeedCtx = false);
 
 void checkType(llvm::StringRef typ, llvm::raw_ostream &os);

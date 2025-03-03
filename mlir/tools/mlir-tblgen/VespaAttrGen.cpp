@@ -12,6 +12,7 @@
 #include "llvm/TableGen/Record.h"
 
 #include <set>
+#include <vector>
 
 using llvm::formatv;
 using llvm::raw_ostream;
@@ -879,8 +880,10 @@ static void prepareParameters(std::vector<ParamData> &data,
 
     // This is actually optional although not stated so in the .td file
     if (defName == "FusedLoc" && param.getName() == "metadata") valueType = ValueType::OPT;
-    if (paramCppType.starts_with("llvm::ArrayRef") || paramCppType.starts_with("ArrayRef"))
+    if (paramCppType.starts_with("llvm::ArrayRef") || paramCppType.starts_with("ArrayRef")) {
       valueType = ValueType::VAR;
+      paramCppType = removeArray(paramCppType);
+    }
 
     data.push_back({paramCppType, paramName, deserName, valueType});
   }
@@ -895,7 +898,7 @@ inline static void aggregateAttribute(const AttrDef &def,
   std::string cppName = formatv("{0}::{1}", cppNamespace.factualType, name).str();
   std::vector<ParamData> params;
   prepareParameters(params, def);
-  const auto *builder = "{0}::get({1})";
+  const auto *builder = "return {0}::get({1});";
   auto deserializer = deserializeParameters(name, cppName, params,
     varName, builder, doesNeedCtx(name));
   auto protoName = formatv("{0}{1}", cppNamespace.namedType, name);
@@ -958,12 +961,12 @@ namespace protocir {
 )";
 
   const char *const namedAttrDeserializer = R"(
-auto nameDeser = deserializeMLIRStringAttr(pAttr.name());
-auto valueDeser = deserializeMLIRAttribute(pAttr.value());
+auto nameDeser = AttrDeserializer::deserializeMLIRStringAttr(mInfo, pAttr.name());
+auto valueDeser = AttrDeserializer::deserializeMLIRAttribute(mInfo, pAttr.value());
 return mlir::NamedAttribute(nameDeser, valueDeser);)";
 
   const char *const flatSymbolDeserializer = R"(
-auto rootReferenceDeser = deserializeMLIRStringAttr(pAttr.root_reference());
+auto rootReferenceDeser = AttrDeserializer::deserializeMLIRStringAttr(mInfo, pAttr.root_reference());
 return mlir::FlatSymbolRefAttr::get(rootReferenceDeser);)";
 
   const char *const denseArrayDeserializer = R"(
@@ -984,22 +987,22 @@ return cir::LangAttr::get(&mInfo.ctx, lAttr);
   const char *const locationDeserializer = R"(
 switch (pAttr.location_case()) {
   case MLIRLocation::LocationCase::kCallSiteLoc: {
-    return deserializeMLIRCallSiteLoc(pAttr.call_site_loc());
+    return AttrDeserializer::deserializeMLIRCallSiteLoc(mInfo, pAttr.call_site_loc());
   } break;
   case MLIRLocation::LocationCase::kFileLineColLoc: {
-    return deserializeMLIRFileLineColLoc(pAttr.file_line_col_loc());
+    return AttrDeserializer::deserializeMLIRFileLineColLoc(mInfo, pAttr.file_line_col_loc());
   } break;
   case MLIRLocation::LocationCase::kFusedLoc: {
-    return deserializeMLIRFusedLoc(pAttr.fused_loc());
+    return AttrDeserializer::deserializeMLIRFusedLoc(mInfo, pAttr.fused_loc());
   } break;
   case MLIRLocation::LocationCase::kNameLoc: {
-    return deserializeMLIRNameLoc(pAttr.name_loc());
+    return AttrDeserializer::deserializeMLIRNameLoc(mInfo, pAttr.name_loc());
   } break;
   case MLIRLocation::LocationCase::kOpaqueLoc: {
-    return deserializeMLIROpaqueLoc(pAttr.opaque_loc());
+    return AttrDeserializer::deserializeMLIROpaqueLoc(mInfo, pAttr.opaque_loc());
   } break;
   case MLIRLocation::LocationCase::kUnknownLoc: {
-    return deserializeMLIRUnknownLoc(pAttr.unknown_loc());
+    return AttrDeserializer::deserializeMLIRUnknownLoc(mInfo, pAttr.unknown_loc());
   } break;
   default:
     llvm_unreachable("NYI");
@@ -1014,10 +1017,10 @@ switch (pAttr.location_case()) {
 
   const auto *varName = "pAttr";
 
-  CppProtoDeserializer deserClass("AttrDeserializer", {"mlir::Attribute", "MLIRAttribute"},
-    "MLIRAttribute", "Attribute", varName, declHeaderOpen, declHeaderClose, defHeaderOpen, "");
+  std::vector<mlir::tblgen::MethodParameter> params{{"ModuleInfo &", "mInfo"}};
 
-  deserClass.addField("ModuleInfo &", "mInfo");
+  CppProtoDeserializer deserClass("AttrDeserializer", {"mlir::Attribute", "MLIRAttribute"},
+    "Attribute", varName, declHeaderOpen, declHeaderClose, defHeaderOpen, "", params);
 
   for (auto *def : mlirDefs) {
     AttrDef attr(def);

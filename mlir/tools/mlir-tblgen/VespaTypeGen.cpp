@@ -165,7 +165,7 @@ return serialized;
 
   auto defs = getDefs(records);
 
-  CppProtoSerializer serClass("TypeSerializer", {"MLIRType", "MLIRType"}, "mlir::Type",
+  CppProtoSerializer serClass("TypeSerializer", {"mlir::Type", "MLIRType"},
     "type", declHeader, declHeaderClose, defHeader, "");
 
   serClass.addField("MLIRModuleID", "moduleID");
